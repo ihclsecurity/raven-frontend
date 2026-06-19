@@ -18,6 +18,11 @@ import type { ContactRole } from '../types/directory'
 import type { AuthUser, AuthUserRole } from '../types/auth'
 import { hasFullAccess, roleLabel } from '../utils/authRoles'
 import { formatAppDateTime } from '../utils/dateTime'
+import {
+  DEFAULT_AZURE_OPENAI_API_VERSION,
+  getAzureOpenAiValidationError,
+  parseJsonStringSetting,
+} from '../utils/azureOpenAi'
 
 type Tab = 'profile' | 'defaults' | 'directory' | 'models' | 'feeds' | 'users'
 
@@ -139,14 +144,11 @@ export default function SettingsPage() {
   const [twilioWhatsappFrom, setTwilioWhatsappFrom] = useState('')
   const [testWhatsappDestination, setTestWhatsappDestination] = useState('')
   const [whatsappTransportTestResult, setWhatsappTransportTestResult] = useState<string>('')
-  const [llmProviderMode, setLlmProviderMode] = useState<'local_ollama' | 'openai_dynamic'>('local_ollama')
-  const [ollamaBaseUrl, setOllamaBaseUrl] = useState('http://127.0.0.1:11434')
-  const [ollamaModel, setOllamaModel] = useState('gpt-oss:120b-cloud')
-  const [openaiBaseUrl, setOpenaiBaseUrl] = useState('https://api.openai.com/v1')
-  const [openaiModel, setOpenaiModel] = useState('gpt-4o-mini')
-  const [openaiApiKey, setOpenaiApiKey] = useState('')
-  const [openaiApiKeyMasked, setOpenaiApiKeyMasked] = useState<string>('')
-  const [useSessionOnlyOpenAiKey, setUseSessionOnlyOpenAiKey] = useState<boolean>(false)
+  const [azureOpenAiEndpoint, setAzureOpenAiEndpoint] = useState('')
+  const [azureOpenAiDeployment, setAzureOpenAiDeployment] = useState('')
+  const [azureOpenAiApiVersion, setAzureOpenAiApiVersion] = useState(DEFAULT_AZURE_OPENAI_API_VERSION)
+  const [azureOpenAiApiKey, setAzureOpenAiApiKey] = useState('')
+  const [azureOpenAiApiKeyMasked, setAzureOpenAiApiKeyMasked] = useState<string>('')
   const [llmTestResult, setLlmTestResult] = useState<string>('')
   const [llmTestError, setLlmTestError] = useState<string>('')
   const [llmTesting, setLlmTesting] = useState(false)
@@ -274,14 +276,12 @@ export default function SettingsPage() {
       setTwilioAuthTokenMasked(twilioSecret.isSet ? twilioSecret.masked || '***' : '')
       setTwilioAuthToken('')
       setTwilioWhatsappFrom(JSON.parse(settings.twilio_whatsapp_from || '""') || '')
-      setLlmProviderMode(JSON.parse(settings.llm_provider_mode || '"local_ollama"'))
-      setOllamaBaseUrl(JSON.parse(settings.ollama_base_url || '"http://127.0.0.1:11434"') || 'http://127.0.0.1:11434')
-      setOllamaModel(JSON.parse(settings.ollama_model || '"gpt-oss:120b-cloud"') || 'gpt-oss:120b-cloud')
-      setOpenaiBaseUrl(JSON.parse(settings.openai_base_url || '"https://api.openai.com/v1"') || 'https://api.openai.com/v1')
-      setOpenaiModel(JSON.parse(settings.openai_model || '"gpt-4o-mini"') || 'gpt-4o-mini')
-      const openAiKeySetting = JSON.parse(settings.openai_api_key || 'null') as { masked?: string; is_set?: boolean } | null
-      setOpenaiApiKeyMasked(openAiKeySetting?.is_set ? (openAiKeySetting.masked || '***') : '')
-      setOpenaiApiKey('')
+      setAzureOpenAiEndpoint(parseJsonStringSetting(settings.azure_openai_endpoint, ''))
+      setAzureOpenAiDeployment(parseJsonStringSetting(settings.azure_openai_deployment, ''))
+      setAzureOpenAiApiVersion(parseJsonStringSetting(settings.azure_openai_api_version, DEFAULT_AZURE_OPENAI_API_VERSION) || DEFAULT_AZURE_OPENAI_API_VERSION)
+      const azureSecret = parseMaskedSecretSetting(settings.azure_openai_api_key)
+      setAzureOpenAiApiKeyMasked(azureSecret.isSet ? azureSecret.masked || '***' : '')
+      setAzureOpenAiApiKey('')
       setDatasurfrBaseUrl(JSON.parse(settings.datasurfr_base_url || '"https://platform.datasurfr.ai"') || 'https://platform.datasurfr.ai')
       setDatasurfrUsername(JSON.parse(settings.datasurfr_username || '""') || '')
       const datasurfrSecret = parseMaskedSecretSetting(settings.datasurfr_password)
@@ -293,15 +293,6 @@ export default function SettingsPage() {
       )
     }
   }, [settings])
-
-  useEffect(() => {
-    const savedSessionKey = sessionStorage.getItem('osint_openai_session_key') || ''
-    const sessionOnly = sessionStorage.getItem('osint_openai_session_only') === '1'
-    setUseSessionOnlyOpenAiKey(sessionOnly)
-    if (sessionOnly && savedSessionKey) {
-      setOpenaiApiKey(savedSessionKey)
-    }
-  }, [])
 
   useEffect(() => {
     if (!contacts?.length) {
@@ -391,6 +382,19 @@ export default function SettingsPage() {
   const selectedManagedUser = (appUsers || []).find((item) => item.id === selectedManagedUserId) || null
   const signedInManagedUser = (appUsers || []).find((item) => item.id === currentUser?.id) || selectedManagedUser || currentUser
   const displayUserName = (user: AuthUser) => [user.first_name, user.last_name].filter(Boolean).join(' ').trim()
+  const effectiveAzureOpenAiApiKey = azureOpenAiApiKey.trim()
+  const azureOpenAiSettingsError = getAzureOpenAiValidationError({
+    azure_openai_endpoint: azureOpenAiEndpoint.trim(),
+    azure_openai_deployment: azureOpenAiDeployment.trim(),
+    azure_openai_api_key: effectiveAzureOpenAiApiKey || azureOpenAiApiKeyMasked,
+  })
+  const azureOpenAiTestPayload = {
+    provider_mode: 'azure_openai' as const,
+    azure_openai_endpoint: azureOpenAiEndpoint.trim(),
+    azure_openai_deployment: azureOpenAiDeployment.trim(),
+    azure_openai_api_version: azureOpenAiApiVersion.trim() || DEFAULT_AZURE_OPENAI_API_VERSION,
+    ...(effectiveAzureOpenAiApiKey ? { azure_openai_api_key: effectiveAzureOpenAiApiKey } : {}),
+  }
 
   return (
     <section className="settings-page">
@@ -822,125 +826,100 @@ export default function SettingsPage() {
       {tab === 'models' && canManageApplication ? (
         <div style={{ display: 'grid', gap: 16, maxWidth: 760 }}>
           <div className="field-card" style={{ display: 'grid', gap: 10 }}>
-            <p className="field-card-title">LLM Connection</p>
+            <p className="field-card-title">Azure OpenAI Connection</p>
             <div style={{ display: 'grid', gap: 10, gridTemplateColumns: '1fr 1fr' }}>
               <label>
-                LLM Provider
-                <select value={llmProviderMode} onChange={(e) => setLlmProviderMode(e.target.value as 'local_ollama' | 'openai_dynamic')}>
-                  <option value="local_ollama">local_ollama (Ollama local/cloud via backend host)</option>
-                  <option value="openai_dynamic">openai_dynamic (analyst key)</option>
-                </select>
+                Endpoint URL
+                <input
+                  value={azureOpenAiEndpoint}
+                  onChange={(e) => setAzureOpenAiEndpoint(e.target.value)}
+                  placeholder="https://your-resource.openai.azure.com"
+                />
               </label>
-              <div style={{ fontSize: 12, color: '#64748b', alignSelf: 'end' }}>
-                Generate uses this provider.
+              <label>
+                Deployment Name
+                <input
+                  value={azureOpenAiDeployment}
+                  onChange={(e) => setAzureOpenAiDeployment(e.target.value)}
+                  placeholder="gpt-4o-mini"
+                />
+              </label>
+              <label>
+                API Version
+                <input
+                  value={azureOpenAiApiVersion}
+                  onChange={(e) => setAzureOpenAiApiVersion(e.target.value)}
+                  placeholder={DEFAULT_AZURE_OPENAI_API_VERSION}
+                />
+              </label>
+              <label>
+                Provider Mode
+                <input value="azure_openai" disabled />
+              </label>
+              <label style={{ gridColumn: '1 / -1' }}>
+                API Key
+                <input
+                  type="password"
+                  value={azureOpenAiApiKey}
+                  onChange={(e) => setAzureOpenAiApiKey(e.target.value)}
+                  placeholder={azureOpenAiApiKeyMasked ? `Saved: ${azureOpenAiApiKeyMasked} (enter to replace)` : 'Azure OpenAI API key'}
+                />
+              </label>
+              <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#64748b' }}>
+                Use either the Azure resource URL or a full deployment URL. Advisory generation and external-news curation now run only through Azure OpenAI.
               </div>
+              {azureOpenAiApiKeyMasked ? (
+                <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#64748b' }}>
+                  Persisted API key on server: {azureOpenAiApiKeyMasked}
+                </div>
+              ) : null}
             </div>
-
-            {llmProviderMode === 'local_ollama' ? (
-              <div style={{ display: 'grid', gap: 10, gridTemplateColumns: '1fr 1fr' }}>
-                <label>
-                  Ollama Base URL
-                  <input value={ollamaBaseUrl} onChange={(e) => setOllamaBaseUrl(e.target.value)} placeholder="http://127.0.0.1:11434" />
-                </label>
-                <label>
-                  Ollama Model
-                  <input value={ollamaModel} onChange={(e) => setOllamaModel(e.target.value)} placeholder="gpt-oss:120b-cloud" />
-                </label>
-              </div>
-            ) : null}
-
-            {llmProviderMode === 'openai_dynamic' ? (
-              <div style={{ display: 'grid', gap: 10, gridTemplateColumns: '1fr 1fr' }}>
-                <label>
-                  OpenAI Base URL
-                  <input value={openaiBaseUrl} onChange={(e) => setOpenaiBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" />
-                </label>
-                <label>
-                  OpenAI Model
-                  <input value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)} placeholder="gpt-4o-mini" />
-                </label>
-                <label style={{ gridColumn: '1 / -1' }}>
-                  OpenAI API Key
-                  <input
-                    type="password"
-                    value={openaiApiKey}
-                    onChange={(e) => setOpenaiApiKey(e.target.value)}
-                    placeholder={openaiApiKeyMasked ? `Saved: ${openaiApiKeyMasked} (enter to replace)` : 'sk-...'}
-                  />
-                </label>
-                <label style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={useSessionOnlyOpenAiKey}
-                    onChange={(e) => {
-                      const enabled = e.target.checked
-                      setUseSessionOnlyOpenAiKey(enabled)
-                      sessionStorage.setItem('osint_openai_session_only', enabled ? '1' : '0')
-                      if (!enabled) {
-                        sessionStorage.removeItem('osint_openai_session_key')
-                      }
-                    }}
-                  />
-                  Session-only key (keep key in browser session, do not persist to backend settings)
-                </label>
-                {openaiApiKeyMasked ? (
-                  <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#64748b' }}>
-                    Persisted key on server: {openaiApiKeyMasked}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
 
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <button
                 onClick={async () => {
-                  if (useSessionOnlyOpenAiKey) {
-                    if (openaiApiKey.trim()) {
-                      sessionStorage.setItem('osint_openai_session_key', openaiApiKey.trim())
-                    }
+                  setLlmTestError('')
+                  if (azureOpenAiSettingsError) {
+                    setLlmTestResult(`Failed · ${azureOpenAiSettingsError}`)
+                    setLlmTestError(azureOpenAiSettingsError)
+                    return
                   }
-                  await settingsApi.set('llm_provider_mode', llmProviderMode)
-                  await settingsApi.set('ollama_base_url', ollamaBaseUrl)
-                  await settingsApi.set('ollama_model', ollamaModel)
-                  await settingsApi.set('openai_base_url', openaiBaseUrl)
-                  await settingsApi.set('openai_model', openaiModel)
-                  if (llmProviderMode === 'openai_dynamic' && !useSessionOnlyOpenAiKey && openaiApiKey.trim()) {
-                    await settingsApi.set('openai_api_key', openaiApiKey.trim())
+                  await settingsApi.set('llm_provider_mode', 'azure_openai')
+                  await settingsApi.set('azure_openai_endpoint', azureOpenAiTestPayload.azure_openai_endpoint)
+                  await settingsApi.set('azure_openai_deployment', azureOpenAiTestPayload.azure_openai_deployment)
+                  await settingsApi.set('azure_openai_api_version', azureOpenAiTestPayload.azure_openai_api_version)
+                  if (effectiveAzureOpenAiApiKey) {
+                    await settingsApi.set('azure_openai_api_key', effectiveAzureOpenAiApiKey)
                   }
                   await queryClient.invalidateQueries({ queryKey: ['settings'] })
-                  setOpenaiApiKey('')
+                  setAzureOpenAiApiKey('')
+                  setLlmTestResult('Azure OpenAI settings saved.')
                 }}
+                disabled={Boolean(azureOpenAiSettingsError)}
               >
                 Save LLM Settings
               </button>
               <button
                 onClick={async () => {
-                  await settingsApi.set('openai_api_key', null)
-                  setOpenaiApiKey('')
-                  setOpenaiApiKeyMasked('')
-                  sessionStorage.removeItem('osint_openai_session_key')
+                  await settingsApi.set('azure_openai_api_key', null)
+                  setAzureOpenAiApiKey('')
+                  setAzureOpenAiApiKeyMasked('')
                   await queryClient.invalidateQueries({ queryKey: ['settings'] })
                 }}
               >
-                Clear Saved OpenAI Key
+                Clear Saved API Key
               </button>
               <button
                 onClick={async () => {
                   setLlmTestError('')
+                  if (azureOpenAiSettingsError) {
+                    setLlmTestResult(`Failed · ${azureOpenAiSettingsError}`)
+                    setLlmTestError(azureOpenAiSettingsError)
+                    return
+                  }
                   setLlmTesting(true)
                   try {
-                    const sessionKey = useSessionOnlyOpenAiKey ? (openaiApiKey.trim() || sessionStorage.getItem('osint_openai_session_key') || '') : ''
-                    if (useSessionOnlyOpenAiKey && sessionKey) {
-                      sessionStorage.setItem('osint_openai_session_key', sessionKey)
-                    }
-                    const result = await settingsApi.testLlmConnection({
-                      provider_mode: llmProviderMode,
-                      ollama_base_url: ollamaBaseUrl,
-                      ollama_model: ollamaModel,
-                      openai_base_url: openaiBaseUrl,
-                      openai_model: openaiModel,
-                      openai_api_key: useSessionOnlyOpenAiKey ? (sessionKey || undefined) : (openaiApiKey || undefined),
-                    })
+                    const result = await settingsApi.testLlmConnection(azureOpenAiTestPayload)
                     const summary = `${result.ok ? 'Connected' : 'Failed'} · ${result.provider} · ${result.model} · ${result.detail}`
                     setLlmTestResult(summary)
                     if (!result.ok) {
@@ -954,7 +933,7 @@ export default function SettingsPage() {
                     setLlmTesting(false)
                   }
                 }}
-                disabled={llmTesting}
+                disabled={llmTesting || Boolean(azureOpenAiSettingsError)}
               >
                 {llmTesting ? 'Testing...' : 'Test LLM Connection'}
               </button>

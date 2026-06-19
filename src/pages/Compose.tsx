@@ -10,7 +10,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { notificationsApi } from '../api/notifications'
 import { useNotification } from '../hooks/useNotification'
-import { useParsedSettings } from '../hooks/useSettings'
+import { useParsedSettings, useSettings } from '../hooks/useSettings'
 import { useTemplates } from '../hooks/useTemplates'
 import { ComposeAnalysisPanel, ComposeLeftPanel } from '../components/compose/ComposeLeftPanel'
 import { ComposeAffectedProperties } from '../components/compose/ComposeAffectedProperties'
@@ -18,6 +18,7 @@ import { ComposeRightPanel } from '../components/compose/ComposeRightPanel'
 import { parseGeographyJson } from '../constants/geography'
 import type { LlmRuntimeInfo } from '../types/notification'
 import type { ComposeTopBarControls } from '../components/layout/AppShell'
+import { buildAzureOpenAiPayload } from '../utils/azureOpenAi'
 
 export type GenerationPhase = 'idle' | 'preparing' | 'applying-template' | 'generating' | 'finalizing' | 'success' | 'error'
 
@@ -137,6 +138,7 @@ export default function ComposePage() {
   const shouldAutoGenerate = params.get('autogen') === '1'
   const queryClient = useQueryClient()
   const settings = useParsedSettings()
+  const { data: rawSettings } = useSettings()
   const { data: existing } = useNotification(existingId)
 
   const [notificationId, setNotificationId] = useState<number | null>(existingId)
@@ -164,7 +166,7 @@ export default function ComposePage() {
 
   const { data: templates = [] } = useTemplates(true)
 
-  const sessionOpenAiKey = sessionStorage.getItem('osint_openai_session_key') || ''
+  const azureOpenAiPayload = buildAzureOpenAiPayload(rawSettings)
 
   // Hydrate local editor state when opening an existing draft via query param.
   useEffect(() => {
@@ -262,9 +264,7 @@ export default function ComposePage() {
 
       const extracted = await notificationsApi.extractMetadata(
         id,
-        {
-          ...(sessionOpenAiKey ? { openai_api_key: sessionOpenAiKey } : {}),
-        },
+        azureOpenAiPayload,
       )
       const usedFallback = applyLlmRuntime(extracted.llm_runtime)
 
@@ -302,7 +302,7 @@ export default function ComposePage() {
 
       if (usedFallback && extracted.llm_runtime) {
         showToast(
-          `Extracted from Source using ${extracted.llm_runtime.provider}${extracted.llm_runtime.model ? ` (${extracted.llm_runtime.model})` : ''} after OpenAI rate limiting.`,
+          `Extracted from Source using ${extracted.llm_runtime.provider}${extracted.llm_runtime.model ? ` (${extracted.llm_runtime.model})` : ''} after Azure OpenAI fallback.`,
           'warning',
         )
       } else {
@@ -485,9 +485,7 @@ export default function ComposePage() {
       setGenerationPhase('generating')
       const generated = await notificationsApi.generate(
         id,
-        {
-          ...(sessionOpenAiKey ? { openai_api_key: sessionOpenAiKey } : {}),
-        },
+        azureOpenAiPayload,
       )
       syncNotification(generated as unknown as Record<string, unknown> & { id: number })
       const usedFallback = applyLlmRuntime({
@@ -499,7 +497,7 @@ export default function ComposePage() {
       })
       if (usedFallback) {
         showToast(
-          `OpenAI rate-limited. Generated with ${String((generated as unknown as Record<string, unknown>).llm_provider || 'local_ollama')}${String((generated as unknown as Record<string, unknown>).llm_model || '') ? ` (${String((generated as unknown as Record<string, unknown>).llm_model)})` : ''}.`,
+          `Generated with ${String((generated as unknown as Record<string, unknown>).llm_provider || 'azure_openai')}${String((generated as unknown as Record<string, unknown>).llm_model || '') ? ` (${String((generated as unknown as Record<string, unknown>).llm_model)})` : ''} after provider fallback.`,
           'warning',
         )
       }

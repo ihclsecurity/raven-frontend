@@ -29,7 +29,8 @@ import type { ApprovalCreatePayload, ApprovalListResponse, ApprovalRequest, Appr
 // These calls stay deliberately direct so the approval UI can control the
 // workflow without hidden client-side transformations.
 export const approvalsApi = {
-  list: () => client.get<ApprovalListResponse>('/approvals').then((r) => r.data),
+  list: () => client.get<ApprovalListResponse>('/approvals', { params: { include_content: false, limit: 80 } }).then((r) => r.data),
+  get: (id: number) => client.get<ApprovalRequest>(`/approvals/${id}`).then((r) => r.data),
   listSuperadmins: () => client.get<ApprovalSuperadmin[]>('/approvals/superadmins').then((r) => r.data),
   create: (payload: ApprovalCreatePayload) => client.post<ApprovalRequest>('/approvals', payload).then((r) => r.data),
   update: (id: number, payload: ApprovalUpdatePayload) => client.put<ApprovalRequest>(`/approvals/${id}`, payload).then((r) => r.data),

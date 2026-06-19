@@ -117,12 +117,11 @@ export interface NotificationCreate {
 }
 
 export interface NotificationGeneratePayload {
-  provider_mode?: 'local_ollama' | 'openai_dynamic'
-  ollama_base_url?: string
-  ollama_model?: string
-  openai_base_url?: string
-  openai_model?: string
-  openai_api_key?: string
+  provider_mode?: 'azure_openai'
+  azure_openai_endpoint?: string
+  azure_openai_api_key?: string
+  azure_openai_deployment?: string
+  azure_openai_api_version?: string
   template_id?: number
 }
 

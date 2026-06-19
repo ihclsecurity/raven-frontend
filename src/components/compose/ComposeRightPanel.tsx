@@ -262,6 +262,40 @@ export function ComposeRightPanel({
     return null
   }
 
+  const ensureCurrentEmailSavedForApproval = async (): Promise<boolean> => {
+    if (!editorDirty) return true
+    if (!onRefreshPreview) {
+      return true
+    }
+    if (isFetchingEmailPreviewShell || renderingBrowserMapPreview) {
+      onShowToast('Wait for the live map snapshot to finish before requesting approval')
+      return false
+    }
+    if (browserMapPreviewError) {
+      onShowToast('Live map snapshot failed; fix the map preview before requesting approval')
+      return false
+    }
+    const htmlToSave = (editorHtml || mapPreviewHtml || emailPreviewDocument).trim()
+    if (!htmlToSave) return true
+    try {
+      setSavingOutputChanges(true)
+      onChange('channel_email_text', htmlToSave)
+      await onRefreshPreview({ channel_email_text: htmlToSave })
+      setEditorHasUserChanges(false)
+      if (notificationId) {
+        void queryClient.invalidateQueries({ queryKey: ['notification-email-preview', notificationId] })
+      }
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not save email editor changes'
+      setEmailSendFeedback(message)
+      onShowToast(message)
+      return false
+    } finally {
+      setSavingOutputChanges(false)
+    }
+  }
+
   const handleSendEmail = async () => {
     if (selectedGroupIds.length > 0) {
       await sendToEmailGroups(selectedGroupIds)
@@ -289,6 +323,8 @@ export function ComposeRightPanel({
     setSendingEmail(true)
     setEmailSendFeedback(null)
     try {
+      const savedForApproval = await ensureCurrentEmailSavedForApproval()
+      if (!savedForApproval) return
       await approvalsApi.create({
         notification_id: notificationId,
         item_type: 'advisory',
@@ -296,7 +332,6 @@ export function ComposeRightPanel({
         title: defaultHeading || emailSubject || `Advisory #${notificationId}`,
         subject: emailSubject || defaultHeading || undefined,
         message_text: outputText,
-        html_body: (editorDirty ? editorHtml : emailPreviewDocument).trim() || undefined,
         recipient_emails: [destination],
         recipient_group_ids: [],
       })
@@ -347,6 +382,8 @@ export function ComposeRightPanel({
     setEmailSendFeedback(null)
     setEmailGroupMenuOpen(false)
     try {
+      const savedForApproval = await ensureCurrentEmailSavedForApproval()
+      if (!savedForApproval) return
       await approvalsApi.create({
         notification_id: notificationId,
         item_type: 'advisory',
@@ -354,7 +391,6 @@ export function ComposeRightPanel({
         title: defaultHeading || emailSubject || `Advisory #${notificationId}`,
         subject: emailSubject || defaultHeading || undefined,
         message_text: outputText,
-        html_body: (editorDirty ? editorHtml : emailPreviewDocument).trim() || undefined,
         recipient_emails: [],
         recipient_group_ids: groupIds,
       })
@@ -496,7 +532,7 @@ export function ComposeRightPanel({
             <div className="runtime-fallback-notice">
               <div className="compose-fallback-title">Provider fallback used</div>
               <div>
-                Requested {requestedProvider || 'configured provider'}, served by {activeProvider || 'local_ollama'}{activeModel ? ` (${activeModel})` : ''}.
+                Requested {requestedProvider || 'configured provider'}, served by {activeProvider || 'azure_openai'}{activeModel ? ` (${activeModel})` : ''}.
               </div>
               {fallbackReason ? (
                 <div className="compose-fallback-detail">{fallbackReason}</div>

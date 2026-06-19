@@ -72,6 +72,12 @@ export interface ApprovalUpdatePayload {
 
 export interface ApprovalListResponse {
   items: ApprovalRequest[]
+  pending_count?: number
+  approved_count?: number
+  sent_count?: number
+  rejected_count?: number
+  total_visible_count?: number
+  returned_count?: number
 }
 
 export interface ApprovalSendResponse {

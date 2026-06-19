@@ -16,6 +16,8 @@ import { emailGroupsApi } from '../api/emailGroups'
 import { useAuth } from '../auth/AuthContext'
 import { approvalsApi } from '../api/approvals'
 import { apiTime } from '../utils/dateTime'
+import { useSettings } from '../hooks/useSettings'
+import { buildAzureOpenAiPayload } from '../utils/azureOpenAi'
 
 type InsightKind = 'business' | 'security'
 
@@ -105,6 +107,7 @@ const OMNI_LOGO_SRC = '/omni.png'
 const INSIGHTS_TEMPLATE_VERSION = 'RAVEN_SEND_INSIGHTS_TEMPLATE_V18'
 const BUSINESS_CURATION_VERSION = 'BUSINESS_CURATION_V3_TECH_WEATHER'
 const assetDataUrlCache = new Map<string, string>()
+const SESSION_QUERY_STALE_TIME = Number.POSITIVE_INFINITY
 
 const BUSINESS_AUTO_CATEGORY_LABELS = [
   'Supply Chain, Fuel, and Logistics',
@@ -402,10 +405,10 @@ async function curateAlertsWithLlm(
   candidates: DatasurfrAlert[],
   fallbackSelected: DatasurfrAlert[],
   maxItems: number,
+  azureOpenAiPayload: ReturnType<typeof buildAzureOpenAiPayload>,
 ): Promise<{ selected: DatasurfrAlert[]; prompt: string }> {
   if (!candidates.length) return { selected: fallbackSelected, prompt: '' }
   const candidatesById = new Map(candidates.map((candidate) => [candidate.id, candidate]))
-  const sessionOpenAiKey = sessionStorage.getItem('osint_openai_session_key') || ''
 
   try {
     const response = await externalNewsApi.curateInsights({
@@ -414,7 +417,7 @@ async function curateAlertsWithLlm(
       coverage_label: config.coverageLabel,
       max_items: maxItems,
       candidates: candidates.map(compactAlertForCuration),
-      ...(sessionOpenAiKey ? { openai_api_key: sessionOpenAiKey } : {}),
+      ...azureOpenAiPayload,
     })
     const selected = response.selected_ids
       .map((id) => candidatesById.get(id))
@@ -1055,6 +1058,8 @@ async function buildInsightHtml(
 }
 
 export default function SendInsightsPage() {
+  const { data: rawSettings } = useSettings()
+  const azureOpenAiPayload = useMemo(() => buildAzureOpenAiPayload(rawSettings), [rawSettings])
   const { sendInsightsGuideLaunchNonce } = useOutletContext<{
     sendInsightsGuideLaunchNonce: number
   }>()
@@ -1065,13 +1070,17 @@ export default function SendInsightsPage() {
   const externalBusinessQuery = useQuery({
     queryKey: ['send-insights-external-news', 'business', externalFeedLookbackDays],
     queryFn: () => externalNewsApi.listInsightsNews('business', EXTERNAL_BUSINESS_LIMIT, externalFeedLookbackDays),
-    staleTime: 15 * 60 * 1000,
+    staleTime: SESSION_QUERY_STALE_TIME,
+    gcTime: SESSION_QUERY_STALE_TIME,
+    refetchOnMount: false,
     refetchOnWindowFocus: false,
   })
   const externalSecurityQuery = useQuery({
     queryKey: ['send-insights-external-news', 'security', externalFeedLookbackDays],
     queryFn: () => externalNewsApi.listInsightsNews('security', EXTERNAL_SECURITY_LIMIT, externalFeedLookbackDays),
-    staleTime: 15 * 60 * 1000,
+    staleTime: SESSION_QUERY_STALE_TIME,
+    gcTime: SESSION_QUERY_STALE_TIME,
+    refetchOnMount: false,
     refetchOnWindowFocus: false,
   })
   const { data: emailGroups = [] } = useQuery({
@@ -1150,6 +1159,19 @@ export default function SendInsightsPage() {
   const [guidePopoverPosition, setGuidePopoverPosition] = useState({ top: 84, left: 20 })
   const [showGuideDoneMessage, setShowGuideDoneMessage] = useState(false)
   const activeGuideStep = isGuideActive ? SEND_INSIGHTS_GUIDE_STEPS[guideStepIndex] : null
+
+  const patchSendInsightsNotificationCache = useCallback((updated: Notification) => {
+    queryClient.setQueryData<{ items?: Notification[] } | undefined>(['send-insights-notifications'], (current) => {
+      const items = current?.items || []
+      const index = items.findIndex((item) => item.id === updated.id)
+      if (index === -1) {
+        return { ...current, items: [updated, ...items] }
+      }
+      const nextItems = [...items]
+      nextItems[index] = updated
+      return { ...current, items: nextItems }
+    })
+  }, [queryClient])
 
   const latestInsightNotifications = useMemo(() => {
     const items = notificationsPage?.items || []
@@ -1294,6 +1316,7 @@ export default function SendInsightsPage() {
             shortlist.slice(0, 320),
             fallbackSelected,
             maxItems,
+            azureOpenAiPayload,
           )
           selected = curation.selected
         }
@@ -1315,7 +1338,7 @@ export default function SendInsightsPage() {
           },
         )
 
-        await queryClient.invalidateQueries({ queryKey: ['notifications'] })
+        patchSendInsightsNotificationCache(updated)
         setCards((prev) => ({
           ...prev,
           [kind]: {
@@ -1326,6 +1349,8 @@ export default function SendInsightsPage() {
             selected,
           },
         }))
+        void queryClient.invalidateQueries({ queryKey: ['notifications'] })
+        void queryClient.invalidateQueries({ queryKey: ['send-insights-notifications'] })
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to generate insight.'
         setCards((prev) => ({
@@ -1338,7 +1363,7 @@ export default function SendInsightsPage() {
         }))
       }
     },
-    [externalBusinessQuery.data, externalSecurityQuery.data, insightConfigs, isExternalFeedLoading, queryClient, shortlistScope],
+    [externalBusinessQuery.data, externalSecurityQuery.data, insightConfigs, isExternalFeedLoading, patchSendInsightsNotificationCache, queryClient, shortlistScope],
   )
 
   const updateInsightSelection = useCallback(
@@ -1367,7 +1392,7 @@ export default function SendInsightsPage() {
           generated_text: updatesText,
           channel_email_text: insightHtml,
         })
-        await queryClient.invalidateQueries({ queryKey: ['notifications'] })
+        patchSendInsightsNotificationCache(updated)
         setCards((prev) => ({
           ...prev,
           [kind]: {
@@ -1378,6 +1403,8 @@ export default function SendInsightsPage() {
             selected: nextSelected,
           },
         }))
+        void queryClient.invalidateQueries({ queryKey: ['notifications'] })
+        void queryClient.invalidateQueries({ queryKey: ['send-insights-notifications'] })
       } catch (error) {
         setCards((prev) => ({
           ...prev,
@@ -1389,7 +1416,7 @@ export default function SendInsightsPage() {
         }))
       }
     },
-    [cards, insightConfigs, queryClient],
+    [cards, insightConfigs, patchSendInsightsNotificationCache, queryClient],
   )
 
   const removeInsightItem = useCallback(
@@ -1608,7 +1635,7 @@ export default function SendInsightsPage() {
     setSendingTarget(target)
     setSendFeedback(null)
     try {
-      for (const kind of kinds) {
+      await Promise.all(kinds.map(async (kind) => {
         const notification = cards[kind].notification as Notification
         await approvalsApi.create({
           notification_id: notification.id,
@@ -1617,11 +1644,10 @@ export default function SendInsightsPage() {
           title: notification.heading || notification.email_subject || insightConfigs[kind].title,
           subject: notification.email_subject || notification.heading || insightConfigs[kind].headingPrefix,
           message_text: extractWorkingText(notification),
-          html_body: (notification.channel_email_text || '').trim() || undefined,
           recipient_emails: [destination],
           recipient_group_ids: [],
         })
-      }
+      }))
       void queryClient.invalidateQueries({ queryKey: ['approvals'] })
       setSendFeedback(
         target === 'both'
@@ -1678,7 +1704,7 @@ export default function SendInsightsPage() {
     setSendFeedback(null)
     setEmailGroupMenuOpen(false)
     try {
-      for (const kind of kinds) {
+      await Promise.all(kinds.map(async (kind) => {
         const notification = cards[kind].notification as Notification
         await approvalsApi.create({
           notification_id: notification.id,
@@ -1687,11 +1713,10 @@ export default function SendInsightsPage() {
           title: notification.heading || notification.email_subject || insightConfigs[kind].title,
           subject: notification.email_subject || notification.heading || insightConfigs[kind].headingPrefix,
           message_text: extractWorkingText(notification),
-          html_body: (notification.channel_email_text || '').trim() || undefined,
           recipient_emails: [],
           recipient_group_ids: groupIds,
         })
-      }
+      }))
       void queryClient.invalidateQueries({ queryKey: ['approvals'] })
       setSendFeedback(
         target === 'both'
@@ -1709,6 +1734,16 @@ export default function SendInsightsPage() {
   const selectedGroupNames = useMemo(
     () => emailGroups.filter((group) => selectedGroupIds.includes(group.id)).map((group) => group.name),
     [emailGroups, selectedGroupIds],
+  )
+  const previewDocs = useMemo<Record<InsightKind, string>>(
+    () => ({
+      business: buildPreviewDoc(cards.business.notification?.channel_email_text || '', 'business'),
+      security: buildPreviewDoc(cards.security.notification?.channel_email_text || '', 'security'),
+    }),
+    [
+      cards.business.notification?.channel_email_text,
+      cards.security.notification?.channel_email_text,
+    ],
   )
   const isLightTheme = typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'light'
   const menuSurfaceBg = isLightTheme ? '#ffffff' : '#0f172a'
@@ -1940,7 +1975,7 @@ export default function SendInsightsPage() {
                   ) : (
                     <iframe
                       title={`${config.title} preview`}
-                      srcDoc={buildPreviewDoc(card.notification?.channel_email_text || '', kind)}
+                      srcDoc={previewDocs[kind]}
                       className="insights-preview-frame"
                       sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
                       referrerPolicy="no-referrer"

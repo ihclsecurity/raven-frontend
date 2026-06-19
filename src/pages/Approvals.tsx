@@ -25,7 +25,7 @@
  * to inspect and adjust them.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, CheckCircle2, Clock3, Eye, Loader2, RefreshCw, Save as SaveIcon, Send, X } from 'lucide-react'
 import { approvalsApi } from '../api/approvals'
@@ -182,9 +182,19 @@ tr[data-insight-alert-id].insight-row-hover .insight-row-actions{display:inline-
 
 type ApprovalActionState = 'approved' | 'rejected' | 'sent' | null
 type AdvisoryPreviewMode = 'editor' | 'email'
+type ApprovalCardView = {
+  item: ApprovalRequest
+  previewText: string
+  recipientSummary: string
+}
 
-function ApprovalCard({
+const APPROVAL_WORKLIST_PAGE_SIZE = 24
+const APPROVAL_COMPLETED_PAGE_SIZE = 24
+
+const ApprovalCard = memo(function ApprovalCard({
   item,
+  previewText,
+  recipientSummary,
   canDecide,
   canSend,
   busy,
@@ -195,6 +205,8 @@ function ApprovalCard({
   onPreview,
 }: {
   item: ApprovalRequest
+  previewText: string
+  recipientSummary: string
   canDecide: boolean
   canSend: boolean
   busy: boolean
@@ -204,11 +216,6 @@ function ApprovalCard({
   onSend: (item: ApprovalRequest) => void
   onPreview: (item: ApprovalRequest) => void
 }) {
-  const recipients = item.recipient_emails.join(', ')
-  const groups = item.recipient_group_names.join(', ')
-  const recipientSummary = groups
-    ? `${recipients || 'No direct recipients'} | ${groups}`
-    : recipients || 'No direct recipients'
   const approveActive = actionState === 'approved'
   const rejectActive = actionState === 'rejected'
   const sendActive = actionState === 'sent'
@@ -227,7 +234,7 @@ function ApprovalCard({
           <span>{item.requester_email || 'Unknown requester'}</span>
           <span>{item.approver_email || 'Unknown approver'}</span>
         </div>
-        <p className="approval-preview-text">{plainPreview(item) || 'No preview content available.'}</p>
+        <p className="approval-preview-text">{previewText || 'No preview content available.'}</p>
         <div className="approval-card-foot">
           <div className="approval-recipient-line" title={recipientSummary}>{recipientSummary}</div>
           <div className="approval-card-actions">
@@ -283,7 +290,7 @@ function ApprovalCard({
       </div>
     </article>
   )
-}
+})
 
 // The approval queue is intentionally split into request summary, preview, and
 // action workflow so the approver can reason about each decision separately.
@@ -301,6 +308,8 @@ export default function ApprovalsPage() {
   const [isRenderingAdvisoryPreview, setIsRenderingAdvisoryPreview] = useState(false)
   const [isSavingAdvisoryChanges, setIsSavingAdvisoryChanges] = useState(false)
   const [actionStates, setActionStates] = useState<Record<number, ApprovalActionState>>({})
+  const [visibleWorklistCount, setVisibleWorklistCount] = useState(APPROVAL_WORKLIST_PAGE_SIZE)
+  const [visibleCompletedCount, setVisibleCompletedCount] = useState(APPROVAL_COMPLETED_PAGE_SIZE)
   // Load the approval queue once, then derive each visible bucket from it.
   const { data, isFetching } = useQuery({
     queryKey: ['approvals'],
@@ -309,38 +318,84 @@ export default function ApprovalsPage() {
 
   const actingAsSuperadmin = isSuperadmin(user)
   const items = data?.items || []
+  const pendingCount = data?.pending_count ?? items.filter((item) => item.status === 'pending').length
+  const rejectedCount = data?.rejected_count ?? items.filter((item) => item.status === 'rejected').length
+  const approvedCount = data?.approved_count ?? items.filter((item) => item.status === 'approved').length
+  const sentCount = data?.sent_count ?? items.filter((item) => item.status === 'sent').length
+  const firstColumnCount = actingAsSuperadmin ? pendingCount : pendingCount + rejectedCount
+  const completedCount = approvedCount + sentCount
+  const preparedItems = useMemo<ApprovalCardView[]>(
+    () => items.map((item) => {
+      const recipients = item.recipient_emails.join(', ')
+      const groups = item.recipient_group_names.join(', ')
+      return {
+        item,
+        previewText: plainPreview(item),
+        recipientSummary: groups
+          ? `${recipients || 'No direct recipients'} | ${groups}`
+          : recipients || 'No direct recipients',
+      }
+    }),
+    [items],
+  )
   // Pending items stay in the primary worklist; later buckets are for review
   // history and confirmation after decisions have been made.
   const firstColumnItems = useMemo(
-    () => items.filter((item) => actingAsSuperadmin ? item.status === 'pending' : ['pending', 'rejected'].includes(item.status)),
-    [actingAsSuperadmin, items],
+    () => preparedItems.filter(({ item }) => actingAsSuperadmin ? item.status === 'pending' : ['pending', 'rejected'].includes(item.status)),
+    [actingAsSuperadmin, preparedItems],
   )
   const approvedItems = useMemo(
-    () => items.filter((item) => ['approved', 'sent'].includes(item.status)),
-    [items],
+    () => preparedItems.filter(({ item }) => ['approved', 'sent'].includes(item.status)),
+    [preparedItems],
   )
-  const sentItems = useMemo(
-    () => items.filter((item) => item.status === 'sent'),
-    [items],
+  const visibleFirstColumnItems = useMemo(
+    () => firstColumnItems.slice(0, visibleWorklistCount),
+    [firstColumnItems, visibleWorklistCount],
+  )
+  const visibleApprovedItems = useMemo(
+    () => approvedItems.slice(0, visibleCompletedCount),
+    [approvedItems, visibleCompletedCount],
   )
 
-  const patchApprovalInCache = useCallback((updated: ApprovalRequest) => {
+  const patchApprovalInCache = useCallback((updated: ApprovalRequest, previousStatus?: ApprovalRequest['status']) => {
     queryClient.setQueryData<ApprovalListResponse>(['approvals'], (current) => {
       const existingItems = current?.items || []
       const index = existingItems.findIndex((item) => item.id === updated.id)
+      const priorStatus = previousStatus || (index >= 0 ? existingItems[index].status : undefined)
+      const nextCounts: ApprovalListResponse = { ...(current || { items: [] }) }
+      if (priorStatus && priorStatus !== updated.status) {
+        const countKeyFor = (status: ApprovalRequest['status']): 'pending_count' | 'approved_count' | 'sent_count' | 'rejected_count' => `${status}_count` as 'pending_count' | 'approved_count' | 'sent_count' | 'rejected_count'
+        const priorKey = countKeyFor(priorStatus)
+        const nextKey = countKeyFor(updated.status)
+        const priorValue = Number(nextCounts[priorKey] || 0)
+        const nextValue = Number(nextCounts[nextKey] || 0)
+        nextCounts[priorKey] = Math.max(0, priorValue - 1)
+        nextCounts[nextKey] = nextValue + 1
+      }
       if (index === -1) {
-        return { items: [updated, ...existingItems] }
+        return { ...nextCounts, items: [updated, ...existingItems] }
       }
       const nextItems = [...existingItems]
       nextItems[index] = updated
-      return { items: nextItems }
+      return { ...nextCounts, items: nextItems }
     })
   }, [queryClient])
 
+  const openPreview = useCallback(async (item: ApprovalRequest) => {
+    setFeedback(null)
+    try {
+      const detailed = await approvalsApi.get(item.id)
+      patchApprovalInCache(detailed)
+      setPreviewItem(detailed)
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'Unable to load approval preview.')
+    }
+  }, [patchApprovalInCache])
+
   const approveMutation = useMutation({
     mutationFn: (item: ApprovalRequest) => approvalsApi.approve(item.id),
-    onSuccess: (updated) => {
-      patchApprovalInCache(updated)
+    onSuccess: (updated, item) => {
+      patchApprovalInCache(updated, item.status)
       setFeedback('Approval request approved.')
     },
     onError: (error, item) => {
@@ -350,8 +405,8 @@ export default function ApprovalsPage() {
   })
   const rejectMutation = useMutation({
     mutationFn: (item: ApprovalRequest) => approvalsApi.reject(item.id),
-    onSuccess: (updated) => {
-      patchApprovalInCache(updated)
+    onSuccess: (updated, item) => {
+      patchApprovalInCache(updated, item.status)
       setFeedback('Approval request rejected.')
     },
     onError: (error, item) => {
@@ -366,9 +421,8 @@ export default function ApprovalsPage() {
         ...item,
         status: result.status,
         sent_at: new Date().toISOString(),
-      })
+      }, item.status)
       setFeedback(`Approved item sent to ${result.delivered_count} recipient(s).`)
-      void queryClient.invalidateQueries({ queryKey: ['approvals'] })
       void queryClient.invalidateQueries({ queryKey: ['delivery-history'] })
     },
     onError: (error, item) => {
@@ -414,6 +468,17 @@ export default function ApprovalsPage() {
   const advisoryPreviewDocument = advisoryEditorDirty
     ? (advisoryEditorHtml || savedAdvisoryHtml || advisoryPreviewHtml || plainTextHtml(previewText))
     : (advisoryPreviewHtml || savedAdvisoryHtml || advisoryEditorHtml || plainTextHtml(previewText))
+  const insightPreviewDocument = useMemo(
+    () => (
+      previewItem
+        ? buildInsightApprovalPreviewDoc(
+          previewItem,
+          actingAsSuperadmin && previewItem.status === 'pending',
+        )
+        : ''
+    ),
+    [actingAsSuperadmin, previewItem],
+  )
 
   const markAction = (item: ApprovalRequest, state: Exclude<ApprovalActionState, null>) => {
     setActionStates((current) => ({ ...current, [item.id]: state }))
@@ -631,21 +696,21 @@ export default function ApprovalsPage() {
             <span className="approval-stat-icon"><Clock3 size={16} /></span>
             <div>
               <span>{actingAsSuperadmin ? 'Needs action' : 'Active'}</span>
-              <strong>{firstColumnItems.length}</strong>
+              <strong>{firstColumnCount}</strong>
             </div>
           </div>
           <div className="approval-stat approval-stat--approved">
             <span className="approval-stat-icon"><CheckCircle2 size={16} /></span>
             <div>
               <span>Approved</span>
-              <strong>{approvedItems.length}</strong>
+              <strong>{completedCount}</strong>
             </div>
           </div>
           <div className="approval-stat approval-stat--sent">
             <span className="approval-stat-icon"><Send size={16} /></span>
             <div>
               <span>Sent</span>
-              <strong>{sentItems.length}</strong>
+              <strong>{sentCount}</strong>
             </div>
           </div>
         </div>
@@ -659,13 +724,15 @@ export default function ApprovalsPage() {
         <section className="approval-column">
           <div className="approval-column-head">
             <h2>{actingAsSuperadmin ? 'Needs action' : 'Sent for approval'}</h2>
-            <span>{firstColumnItems.length}</span>
+            <span>{firstColumnCount}</span>
           </div>
           <div className="approval-card-list">
-            {firstColumnItems.map((item) => (
+            {visibleFirstColumnItems.map(({ item, previewText, recipientSummary }) => (
               <ApprovalCard
                 key={item.id}
                 item={item}
+                previewText={previewText}
+                recipientSummary={recipientSummary}
                 canDecide={actingAsSuperadmin && item.status === 'pending'}
                 canSend={false}
                 busy={busy}
@@ -673,22 +740,33 @@ export default function ApprovalsPage() {
                 onApprove={(row) => { markAction(row, 'approved'); approveMutation.mutate(row) }}
                 onReject={(row) => { markAction(row, 'rejected'); rejectMutation.mutate(row) }}
                 onSend={(row) => { markAction(row, 'sent'); sendMutation.mutate(row) }}
-                onPreview={setPreviewItem}
+                onPreview={(row) => { void openPreview(row) }}
               />
             ))}
+            {firstColumnItems.length > visibleFirstColumnItems.length ? (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setVisibleWorklistCount((current) => current + APPROVAL_WORKLIST_PAGE_SIZE)}
+              >
+                Show more
+              </button>
+            ) : null}
             {!isFetching && firstColumnItems.length === 0 ? <div className="approval-empty">No requests in this column.</div> : null}
           </div>
         </section>
         <section className="approval-column">
           <div className="approval-column-head">
             <h2>Completed</h2>
-            <span>{approvedItems.length}</span>
+            <span>{completedCount}</span>
           </div>
           <div className="approval-card-list">
-            {approvedItems.map((item) => (
+            {visibleApprovedItems.map(({ item, previewText, recipientSummary }) => (
               <ApprovalCard
                 key={item.id}
                 item={item}
+                previewText={previewText}
+                recipientSummary={recipientSummary}
                 canDecide={false}
                 canSend={item.status === 'approved'}
                 busy={busy}
@@ -696,9 +774,18 @@ export default function ApprovalsPage() {
                 onApprove={(row) => { markAction(row, 'approved'); approveMutation.mutate(row) }}
                 onReject={(row) => { markAction(row, 'rejected'); rejectMutation.mutate(row) }}
                 onSend={(row) => { markAction(row, 'sent'); sendMutation.mutate(row) }}
-                onPreview={setPreviewItem}
+                onPreview={(row) => { void openPreview(row) }}
               />
             ))}
+            {approvedItems.length > visibleApprovedItems.length ? (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setVisibleCompletedCount((current) => current + APPROVAL_COMPLETED_PAGE_SIZE)}
+              >
+                Show more
+              </button>
+            ) : null}
             {!isFetching && approvedItems.length === 0 ? <div className="approval-empty">No approved requests yet.</div> : null}
           </div>
         </section>
@@ -828,10 +915,7 @@ export default function ApprovalsPage() {
                 sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
                 referrerPolicy="no-referrer"
                 onLoad={(event) => normalizeEmailPreviewFrame(event.currentTarget)}
-                srcDoc={buildInsightApprovalPreviewDoc(
-                  previewItem,
-                  actingAsSuperadmin && previewItem.status === 'pending',
-                )}
+                srcDoc={insightPreviewDocument}
               />
             )}
             {actingAsSuperadmin && previewItem.status === 'pending' && previewItem.item_type === 'insight' ? (
