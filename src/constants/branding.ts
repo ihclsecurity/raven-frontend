@@ -12,8 +12,8 @@
  * - it does not load images dynamically
  * - it does not manage theme state itself
  */
-export const RAVEN_LOGO_LIGHT_PATH = "/Raven Light.png"
-export const RAVEN_LOGO_DARK_PATH = "/Raven Dark.png"
+export const RAVEN_LOGO_LIGHT_PATH = "/raven_light.png"
+export const RAVEN_LOGO_DARK_PATH = "/raven_dark.png"
 
 export function getRavenLogoPath(theme: 'light' | 'dark'): string {
   return theme === 'dark' ? RAVEN_LOGO_DARK_PATH : RAVEN_LOGO_LIGHT_PATH

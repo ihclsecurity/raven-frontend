@@ -141,7 +141,7 @@ function LockedApplicationPreview() {
     <div className="auth-preview-shell" aria-hidden="true">
       <aside className="auth-preview-sidebar">
         <div className="auth-preview-brand">
-          <img src="/raven-mark.svg" alt="" />
+          <img src="/raven_mark.svg" alt="" />
           <span>Raven</span>
         </div>
         <div className="auth-preview-nav">
