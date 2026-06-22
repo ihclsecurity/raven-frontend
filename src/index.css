@@ -3171,7 +3171,7 @@ body {
   right: 26px;
   width: min(34vw, 380px);
   aspect-ratio: 1 / 1;
-  background: url('/Raven Light.png') center / contain no-repeat;
+  background: url('/raven_light.png') center / contain no-repeat;
   opacity: 0.055;
   filter: grayscale(24%) saturate(82%) contrast(108%);
   pointer-events: none;
@@ -3185,7 +3185,7 @@ body {
   bottom: -84px;
   width: min(26vw, 270px);
   aspect-ratio: 1 / 1;
-  background: url('/Raven Light.png') center / contain no-repeat;
+  background: url('/raven_light.png') center / contain no-repeat;
   opacity: 0.028;
   filter: blur(1.1px) grayscale(36%);
   pointer-events: none;
@@ -8811,7 +8811,7 @@ button.dashboard-kpi-card-v2--failed-hot.dashboard-kpi-card-v2--clickable:hover:
 
 :root[data-theme='dark'] .app-shell-content::before,
 :root[data-theme='dark'] .app-shell-content::after {
-  background-image: url('/Raven Dark.png');
+  background-image: url('/raven_dark.png');
   opacity: 0.035;
   filter: grayscale(24%) saturate(65%) brightness(130%);
 }
