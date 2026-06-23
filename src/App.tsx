@@ -48,6 +48,7 @@ const SendInsightsPage = lazy(() => import('./pages/SendInsights'))
 const SendAdvisoriesPage = lazy(() => import('./pages/SendAdvisories'))
 const ApprovalsPage = lazy(() => import('./pages/Approvals'))
 const ImpactMapSnapshotPage = lazy(() => import('./pages/ImpactMapSnapshot'))
+const NotFoundPage = lazy(() => import('./pages/index'))
 
 // These wrappers keep the route table readable by hiding the lazy-loading and
 // access-control mechanics behind small helper names.
@@ -73,21 +74,21 @@ export default function App() {
       <Route path="/impact-map-snapshot" element={deferredPage(<ImpactMapSnapshotPage />)} />
       <Route path="/" element={<AppShell />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
-        <Route path="dashboard" element={<DashboardPage />} />
-        <Route path="send-advisories" element={fullAccessPage(<SendAdvisoriesPage />)} />
-        <Route path="send-insights" element={fullAccessPage(<SendInsightsPage />)} />
-        <Route path="approvals" element={fullAccessPage(<ApprovalsPage />)} />
-        <Route path="compose" element={fullAccessPage(<ComposePage />)} />
-        <Route path="saved" element={fullAccessPage(<SavedMessagesPage />)} />
-        <Route path="datasurfr" element={deferredPage(<DatasurfrFeedPage />)} />
-        <Route path="external-feed" element={deferredPage(<ExternalFeedPage />)} />
-        <Route path="map-view" element={deferredPage(<MapViewPage />)} />
-        <Route path="sent-history" element={fullAccessPage(<SentHistoryPage />)} />
-        <Route path="templates" element={fullAccessPage(<TemplatesPage />)} />
-        <Route path="email-groups" element={fullAccessPage(<EmailGroupsPage />)} />
-        <Route path="property-mapping" element={fullAccessPage(<PropertyMappingPage />)} />
-        <Route path="settings" element={deferredPage(<SettingsPage />)} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/send-advisories" element={fullAccessPage(<SendAdvisoriesPage />)} />
+        <Route path="/send-insights" element={fullAccessPage(<SendInsightsPage />)} />
+        <Route path="/approvals" element={fullAccessPage(<ApprovalsPage />)} />
+        <Route path="/compose" element={fullAccessPage(<ComposePage />)} />
+        <Route path="/saved" element={fullAccessPage(<SavedMessagesPage />)} />
+        <Route path="/datasurfr" element={deferredPage(<DatasurfrFeedPage />)} />
+        <Route path="/external-feed" element={deferredPage(<ExternalFeedPage />)} />
+        <Route path="/map-view" element={deferredPage(<MapViewPage />)} />
+        <Route path="/sent-history" element={fullAccessPage(<SentHistoryPage />)} />
+        <Route path="/templates" element={fullAccessPage(<TemplatesPage />)} />
+        <Route path="/email-groups" element={fullAccessPage(<EmailGroupsPage />)} />
+        <Route path="/property-mapping" element={fullAccessPage(<PropertyMappingPage />)} />
+        <Route path="/settings" element={deferredPage(<SettingsPage />)} />
+        <Route path="/*" element={fullAccessPage(<NotFoundPage/>)} />
       </Route>
     </Routes>
   )
