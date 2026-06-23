@@ -26,6 +26,7 @@
 
 import { useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { buildApiUrl } from '../api/baseUrl'
 import { renderImpactMapIntoContainer, type ImpactMapPayload } from '../utils/renderImpactMapImage'
 
 type SnapshotPayload = ImpactMapPayload & {
@@ -80,7 +81,9 @@ export default function ImpactMapSnapshotPage() {
 
     const renderSnapshot = async () => {
       if (!notificationId || !ts || !sig || !containerRef.current) return
-      const response = await fetch(`/api/notifications/impact-map-snapshot/${notificationId}?ts=${encodeURIComponent(ts)}&sig=${encodeURIComponent(sig)}`)
+      const response = await fetch(
+        buildApiUrl(`/api/notifications/impact-map-snapshot/${notificationId}?ts=${encodeURIComponent(ts)}&sig=${encodeURIComponent(sig)}`),
+      )
       if (!response.ok) {
         throw new Error(`Snapshot payload request failed: ${response.status}`)
       }
