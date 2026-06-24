@@ -1,5 +1,5 @@
 import { defineConfig, loadEnv } from 'vite'
-import react from '@vitejs/plugin-react';
+import react from '@vitejs/plugin-react'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -7,47 +7,20 @@ export default defineConfig(({ mode }) => {
   if (mode !== 'development' && !configuredBackendUrl) {
     throw new Error('Missing VITE_BACKEND_URL for non-development build')
   }
-
-  // For Production
-  const backendUrl = configuredBackendUrl;
-
-  // For Development
-  // const backendUrl = configuredBackendUrl || (mode === 'development' ? 'http://localhost:8010' : '');
+  const backendUrl = configuredBackendUrl || (mode === 'development' ? 'http://localhost:8010' : '')
+  const proxyTarget = configuredBackendUrl || 'http://localhost:8010'
 
   return {
     define: {
       __APP_BACKEND_URL__: JSON.stringify(backendUrl),
     },
-    plugins: [
-      react(),
-      // mode === 'production' && obfuscatorPlugin({
-      //   exclude: [/node_modules/],
-      //   include: ['src/**/*.ts', 'src/**/*.tsx', 'src/**/*.js', 'src/**/*.jsx'],
-      //   options: {
-      //     debugProtection: true,
-      //     deadCodeInjection: true,
-      //     disableConsoleOutput: true,
-      //     selfDefending: true,
-      //     controlFlowFlattening: true,
-      //     stringArray: true,
-      //     stringArrayThreshold: 0.5
-      //   }
-      // })
-    ],
-    build: {
-      rollupOptions: {
-        output: {
-          entryFileNames: 'assets/[hash].js',
-          chunkFileNames: 'assets/[hash].js',
-          assetFileNames: 'assets/[hash][extname]',
-        },
-      },
-    },
+    plugins: [react()],
     server: {
       port: 3000,
+      allowedHosts: ['d7ca-115-117-121-234.ngrok-free.app'],
       proxy: {
         '/api': {
-          target: backendUrl,
+          target: proxyTarget,
           changeOrigin: true,
         },
       },
