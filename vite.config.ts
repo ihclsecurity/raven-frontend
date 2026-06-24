@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from 'vite'
-import react from '@vitejs/plugin-react'
+import react from '@vitejs/plugin-react';
+import obfuscatorPlugin from 'vite-plugin-javascript-obfuscator';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -14,7 +15,31 @@ export default defineConfig(({ mode }) => {
     define: {
       __APP_BACKEND_URL__: JSON.stringify(backendUrl),
     },
-    plugins: [react()],
+    plugins: [
+      react(),
+      mode === 'production' && obfuscatorPlugin({
+        exclude: [/node_modules/],
+        include: ['src/**/*.ts', 'src/**/*.tsx', 'src/**/*.js', 'src/**/*.jsx'],
+        options: {
+          debugProtection: true,
+          deadCodeInjection: true,
+          disableConsoleOutput: true,
+          selfDefending: true,
+          controlFlowFlattening: true,
+          stringArray: true,
+          stringArrayThreshold: 0.5
+        }
+      })
+    ],
+    build: {
+      rollupOptions: {
+        output: {
+          entryFileNames: 'assets/[hash].js',
+          chunkFileNames: 'assets/[hash].js',
+          assetFileNames: 'assets/[hash][extname]',
+        },
+      },
+    },
     server: {
       port: 3000,
       allowedHosts: ['d7ca-115-117-121-234.ngrok-free.app'],
