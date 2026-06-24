@@ -8,8 +8,12 @@ export default defineConfig(({ mode }) => {
   if (mode !== 'development' && !configuredBackendUrl) {
     throw new Error('Missing VITE_BACKEND_URL for non-development build')
   }
-  const backendUrl = configuredBackendUrl || (mode === 'development' ? 'http://localhost:8010' : '')
-  const proxyTarget = configuredBackendUrl || 'http://localhost:8010'
+
+  // For Production
+  const backendUrl = configuredBackendUrl;
+
+  // For Development
+  // const backendUrl = configuredBackendUrl || (mode === 'development' ? 'http://localhost:8010' : '');
 
   return {
     define: {
@@ -42,10 +46,9 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 3000,
-      allowedHosts: ['d7ca-115-117-121-234.ngrok-free.app'],
       proxy: {
         '/api': {
-          target: proxyTarget,
+          target: backendUrl,
           changeOrigin: true,
         },
       },
