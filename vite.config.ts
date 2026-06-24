@@ -1,6 +1,5 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react';
-import obfuscatorPlugin from 'vite-plugin-javascript-obfuscator';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -21,19 +20,19 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       react(),
-      mode === 'production' && obfuscatorPlugin({
-        exclude: [/node_modules/],
-        include: ['src/**/*.ts', 'src/**/*.tsx', 'src/**/*.js', 'src/**/*.jsx'],
-        options: {
-          debugProtection: true,
-          deadCodeInjection: true,
-          disableConsoleOutput: true,
-          selfDefending: true,
-          controlFlowFlattening: true,
-          stringArray: true,
-          stringArrayThreshold: 0.5
-        }
-      })
+      // mode === 'production' && obfuscatorPlugin({
+      //   exclude: [/node_modules/],
+      //   include: ['src/**/*.ts', 'src/**/*.tsx', 'src/**/*.js', 'src/**/*.jsx'],
+      //   options: {
+      //     debugProtection: true,
+      //     deadCodeInjection: true,
+      //     disableConsoleOutput: true,
+      //     selfDefending: true,
+      //     controlFlowFlattening: true,
+      //     stringArray: true,
+      //     stringArrayThreshold: 0.5
+      //   }
+      // })
     ],
     build: {
       rollupOptions: {
