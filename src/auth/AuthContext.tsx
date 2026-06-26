@@ -39,6 +39,16 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
+const AUTH_COOKIE_NAME = 'raven_auth'
+
+function authCookieOptions() {
+  return {
+    path: '/',
+    maxAge: 60 * 60 * 24 * 7,
+    secure: window.location.protocol === 'https:',
+    sameSite: 'lax' as const,
+  }
+}
 
 // ============================================================================
 // Session bootstrap
@@ -61,12 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const clearSession = useCallback(() => {
     setUser(null)
     setStatus('unauthenticated')
-    removeCookie('raven_auth', {
-      path : "/",
-      maxAge: 60 * 60 * 24 * 7,
-      secure: true,
-      sameSite: 'lax',
-    })
+    removeCookie(AUTH_COOKIE_NAME, authCookieOptions())
     queryClient.clear()
   }, [queryClient, removeCookie])
 
@@ -104,13 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const result = await authApi.login(email, password)
-    console.log(result)
-    setCookie('raven_auth', result.access_token, {
-      path : "/",
-      maxAge: 60 * 60 * 24 * 7,
-      secure: true,
-      sameSite: 'lax',
-    })
+    setCookie(AUTH_COOKIE_NAME, result.access_token, authCookieOptions())
     setUser(result.user)
     setStatus('authenticated')
   }, [setCookie])

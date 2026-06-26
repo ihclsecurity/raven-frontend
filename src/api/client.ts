@@ -24,15 +24,44 @@
  * only standardizes the shared HTTP transport.
  */
 
-import axios from 'axios'
+import axios, { AxiosHeaders } from 'axios'
 import { apiBaseUrl } from './baseUrl'
 
 export const AUTH_EXPIRED_EVENT = 'raven-auth-expired'
+const AUTH_COOKIE_NAME = 'raven_auth'
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null
+
+  const prefix = `${encodeURIComponent(name)}=`
+  const match = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))
+
+  if (!match) return null
+
+  return decodeURIComponent(match.slice(prefix.length))
+}
 
 const client = axios.create({
   baseURL: apiBaseUrl,
   withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
+})
+
+// Browsers do not allow frontend code to set the Cookie header directly.
+// We keep withCredentials enabled for cookie-based auth and also mirror the
+// stored auth token into Authorization for APIs that expect bearer auth.
+client.interceptors.request.use((config) => {
+  const token = readCookie(AUTH_COOKIE_NAME)
+  if (!token) return config
+
+  const headers = AxiosHeaders.from(config.headers || {})
+  headers.set('Authorization', `Bearer ${token}`)
+  config.headers = headers
+
+  return config
 })
 
 // The interceptor turns backend validation shapes into a single message and
