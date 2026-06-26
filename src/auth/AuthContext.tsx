@@ -62,7 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // The public impact-map snapshot must remain accessible without a login
   // challenge so email links can open directly for recipients.
   const isPublicSnapshotRoute = window.location.pathname === '/impact-map-snapshot'
-  const [, setCookie, removeCookie] = useCookies(['raven_auth'])
+  const [cookie, setCookie, removeCookie] = useCookies(['raven_auth'])
   const [user, setUser] = useState<AuthUser | null>(null)
   const [status, setStatus] = useState<AuthStatus>(isPublicSnapshotRoute ? 'unauthenticated' : 'loading')
 
@@ -110,6 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (email: string, password: string) => {
     const result = await authApi.login(email, password)
     setCookie(AUTH_COOKIE_NAME, result.access_token, authCookieOptions())
+    console.log(cookie)
     setUser(result.user)
     setStatus('authenticated')
   }, [setCookie])

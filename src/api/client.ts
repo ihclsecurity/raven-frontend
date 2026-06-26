@@ -58,7 +58,7 @@ client.interceptors.request.use((config) => {
   if (!token) return config
 
   const headers = AxiosHeaders.from(config.headers || {})
-  headers.set('Authorization', `Bearer ${token}`)
+  headers.set('Authorization', `bearer ${token}`)
   config.headers = headers
 
   return config
