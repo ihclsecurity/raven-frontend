@@ -94,6 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {
         if (cancelled) return
+        clearSession()
       })
 
     return () => {
