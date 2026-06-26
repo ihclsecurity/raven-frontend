@@ -27,6 +27,7 @@ import { LockKeyhole, LogIn } from 'lucide-react'
 import { authApi } from '../api/auth'
 import { AUTH_EXPIRED_EVENT } from '../api/client'
 import type { AuthUser } from '../types/auth'
+import { useCookies } from 'react-cookie'
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'
 
@@ -51,6 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // The public impact-map snapshot must remain accessible without a login
   // challenge so email links can open directly for recipients.
   const isPublicSnapshotRoute = window.location.pathname === '/impact-map-snapshot'
+  const [, setCookie, removeCookie] = useCookies(['raven_auth'])
   const [user, setUser] = useState<AuthUser | null>(null)
   const [status, setStatus] = useState<AuthStatus>(isPublicSnapshotRoute ? 'unauthenticated' : 'loading')
 
@@ -59,8 +61,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const clearSession = useCallback(() => {
     setUser(null)
     setStatus('unauthenticated')
+    removeCookie('raven_auth', {
+      path : "/",
+      maxAge: 60 * 60 * 24 * 7,
+      secure: true,
+      sameSite: 'lax',
+    })
     queryClient.clear()
-  }, [queryClient])
+  }, [queryClient, removeCookie])
 
   useEffect(() => {
     if (isPublicSnapshotRoute) {
@@ -96,9 +104,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const result = await authApi.login(email, password)
+    console.log(result)
+    setCookie('raven_auth', result.access_token, {
+      path : "/",
+      maxAge: 60 * 60 * 24 * 7,
+      secure: true,
+      sameSite: 'lax',
+    })
     setUser(result.user)
     setStatus('authenticated')
-  }, [])
+  }, [setCookie])
 
   const logout = useCallback(async () => {
     try {
