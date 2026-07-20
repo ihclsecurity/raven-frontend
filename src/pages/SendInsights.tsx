@@ -8,8 +8,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { ChevronRight, Download, Loader2, RefreshCw, Send, Users, X } from 'lucide-react'
 import { notificationsApi } from '../api/notifications'
+import { datasurfrApi } from '../api/datasurfr'
 import { externalNewsApi, type ExternalNewsCandidate } from '../api/externalNews'
-import type { DatasurfrAlert } from '../types/datasurfr'
+import type { DatasurfrAlert, DatasurfrMapProperty } from '../types/datasurfr'
 import type { Notification } from '../types/notification'
 import { consumeShortlistHandoff, loadExternalFeedLookbackDays, loadExternalShortlist } from '../utils/externalShortlist'
 import { emailGroupsApi } from '../api/emailGroups'
@@ -35,6 +36,12 @@ type InsightCardState = {
   viewMode: 'template' | 'text'
   notification: Notification | null
   selected: DatasurfrAlert[]
+}
+
+type PropertyEmailSuggestion = {
+  email: string
+  label: string
+  searchText: string
 }
 
 type SendInsightsGuideStep = {
@@ -443,6 +450,59 @@ async function curateAlertsWithLlm(
 
 function extractWorkingText(notification: Notification): string {
   return (notification.final_text || notification.edited_text || notification.generated_text || '').trim()
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function splitEmails(value?: string | null): string[] {
+  return String(value || '')
+    .split(/[;,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function isLikelyEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
+}
+
+function propertyEmailSuggestions(property: DatasurfrMapProperty): PropertyEmailSuggestion[] {
+  const propertyName = String(property.property_name || '').trim()
+  const brand = String(property.brand || '').trim()
+  const city = String(property.city || '').trim()
+  const suggestions: PropertyEmailSuggestion[] = []
+  for (const email of splitEmails(property.gm_email)) {
+    const name = String(property.gm_name || '').trim()
+    suggestions.push({
+      email,
+      label: ['GM', name, propertyName, brand, city].filter(Boolean).join(' - '),
+      searchText: [email, name, propertyName, brand, city, 'GM'].filter(Boolean).join(' '),
+    })
+  }
+  for (const email of splitEmails(property.sm_email)) {
+    const name = String(property.sm_name || '').trim()
+    suggestions.push({
+      email,
+      label: ['SM', name, propertyName, brand, city].filter(Boolean).join(' - '),
+      searchText: [email, name, propertyName, brand, city, 'SM'].filter(Boolean).join(' '),
+    })
+  }
+  return suggestions
+}
+
+function uniqueEmailSuggestions(values: PropertyEmailSuggestion[]): PropertyEmailSuggestion[] {
+  const seen = new Set<string>()
+  const output: PropertyEmailSuggestion[] = []
+  for (const item of values) {
+    const email = item.email.trim()
+    if (!email || !isLikelyEmail(email)) continue
+    const key = normalizeEmail(email)
+    if (seen.has(key)) continue
+    seen.add(key)
+    output.push({ ...item, email })
+  }
+  return output
 }
 
 const INSIGHTS_PREVIEW_BASE_STYLES = `
@@ -943,7 +1003,7 @@ async function buildInsightHtml(
           : []),
       ].join('')
 
-  const outlookHeaderHtml = outlookHeaderImageUrl
+  const emailHeaderHtml = outlookHeaderImageUrl
     ? `<img src="${outlookHeaderImageUrl}" alt="${escapeHtml(config.title)} - ${escapeHtml(config.coverageLabel)}" width="740" height="206" style="display:block;width:740px;height:206px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;background-color:#123653;" />`
     : `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="740" style="width:740px;background-color:#123653;border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
                 <tr>
@@ -993,35 +1053,7 @@ async function buildInsightHtml(
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="740" style="width:100%;max-width:740px;background-color:#ffffff;border-collapse:separate;border-spacing:0;border:1px solid #d8e3ea;border-radius:16px;overflow:hidden;mso-table-lspace:0pt;mso-table-rspace:0pt;">
           <tr>
             <td style="padding:0;background-color:#123653;border-bottom:0;">
-              <!--[if mso]>
-              ${outlookHeaderHtml}
-              <![endif]-->
-              <!--[if !mso]><!-->
-              <div style="background-color:#123653;background-image:linear-gradient(112deg,#071426 0%,#123653 46%,#eef3f1 76%,#d9b45c 100%);padding:20px 30px 22px 30px;">
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
-                <tr>
-                  <td align="left" valign="top" width="50%" style="font-size:0;line-height:normal;mso-line-height-rule:exactly;">
-                    <img src="${ihclLogoUrl}" alt="IHCL Logo" width="114" style="display:block;width:114px;height:auto;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />
-                  </td>
-                  <td align="right" valign="top" width="50%" style="font-size:0;line-height:normal;mso-line-height-rule:exactly;">
-                    <img src="${omniLogoUrl}" alt="Omni Logo" width="107" style="display:block;width:107px;height:auto;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />
-                  </td>
-                </tr>
-              </table>
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:18px;border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
-                <tr>
-                  <td align="center" valign="top" style="font-family:Aptos, Arial, Helvetica, sans-serif;">
-                    <div style="font-family:Aptos, Arial, Helvetica, sans-serif;font-size:32px;line-height:38px;mso-line-height-rule:exactly;font-weight:700;color:#ffffff;text-shadow:0 1px 3px rgba(7,20,38,0.45);">
-                      ${escapeHtml(config.title)}
-                    </div>
-                    <div style="padding-top:10px;font-family:Aptos, Arial, Helvetica, sans-serif;font-size:17px;line-height:23px;mso-line-height-rule:exactly;font-weight:700;color:#ffffff;text-shadow:0 1px 3px rgba(7,20,38,0.45);">
-                      ${escapeHtml(config.coverageLabel)}
-                    </div>
-                  </td>
-                </tr>
-              </table>
-              </div>
-              <!--<![endif]-->
+              ${emailHeaderHtml}
             </td>
           </tr>
 
@@ -1091,6 +1123,11 @@ export default function SendInsightsPage() {
     queryKey: ['approval-superadmins-send-insights'],
     queryFn: approvalsApi.listSuperadmins,
   })
+  const { data: mapProperties = [] } = useQuery({
+    queryKey: ['map-view-properties'],
+    queryFn: () => datasurfrApi.listMapProperties(),
+    staleTime: 5 * 60 * 1000,
+  })
   const { data: notificationsPage } = useQuery({
     queryKey: ['send-insights-notifications'],
     queryFn: () => notificationsApi.list({ page: 1, page_size: 100 }),
@@ -1147,6 +1184,7 @@ export default function SendInsightsPage() {
     },
   })
   const [recipientEmail, setRecipientEmail] = useState('')
+  const [recipientSearchFocused, setRecipientSearchFocused] = useState(false)
   const [emailGroupMenuOpen, setEmailGroupMenuOpen] = useState(false)
   const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([])
   const [selectedApproverUserId, setSelectedApproverUserId] = useState<number | ''>('')
@@ -1159,6 +1197,26 @@ export default function SendInsightsPage() {
   const [guidePopoverPosition, setGuidePopoverPosition] = useState({ top: 84, left: 20 })
   const [showGuideDoneMessage, setShowGuideDoneMessage] = useState(false)
   const activeGuideStep = isGuideActive ? SEND_INSIGHTS_GUIDE_STEPS[guideStepIndex] : null
+  const allPropertyEmailSuggestions = useMemo(
+    () => uniqueEmailSuggestions(mapProperties.flatMap((property) => propertyEmailSuggestions(property))),
+    [mapProperties],
+  )
+  const filteredRecipientSuggestions = useMemo(() => {
+    const query = recipientEmail.trim().toLowerCase()
+    if (!query) return allPropertyEmailSuggestions.slice(0, 10)
+    return allPropertyEmailSuggestions
+      .filter((item) => item.searchText.toLowerCase().includes(query))
+      .slice(0, 10)
+  }, [allPropertyEmailSuggestions, recipientEmail])
+  const shouldShowRecipientSuggestions =
+    recipientSearchFocused
+    && selectedGroupIds.length === 0
+    && filteredRecipientSuggestions.length > 0
+  const selectRecipientSuggestion = (email: string) => {
+    setRecipientEmail(email)
+    setSelectedGroupIds([])
+    setRecipientSearchFocused(false)
+  }
 
   const patchSendInsightsNotificationCache = useCallback((updated: Notification) => {
     queryClient.setQueryData<{ items?: Notification[] } | undefined>(['send-insights-notifications'], (current) => {
@@ -1775,15 +1833,52 @@ export default function SendInsightsPage() {
       <section id="send-insights-guide-mail" className={`insights-mail-panel${guideClassFor('mail-controls')}`}>
         <div className="insights-mail-actions">
           <div className="insights-recipient-control">
-            <input
-              value={recipientEmail}
-              onChange={(event) => {
-                setRecipientEmail(event.target.value)
-                setSelectedGroupIds([])
-              }}
-              placeholder="Recipient email address"
-              className="insights-email-input"
-            />
+            <div className="insights-recipient-search">
+              <input
+                value={recipientEmail}
+                onChange={(event) => {
+                  setRecipientEmail(event.target.value)
+                  setSelectedGroupIds([])
+                  setRecipientSearchFocused(true)
+                }}
+                onFocus={() => setRecipientSearchFocused(true)}
+                onBlur={() => window.setTimeout(() => setRecipientSearchFocused(false), 140)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && filteredRecipientSuggestions[0]) {
+                    event.preventDefault()
+                    selectRecipientSuggestion(filteredRecipientSuggestions[0].email)
+                  } else if (event.key === 'Escape') {
+                    setRecipientSearchFocused(false)
+                  }
+                }}
+                placeholder="Search/add SMTP email by email, name, or property"
+                className="insights-email-input"
+                aria-label="Search SMTP recipient by email, name, or property"
+                aria-expanded={shouldShowRecipientSuggestions}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                name="raven-send-insights-smtp-recipient"
+              />
+              {shouldShowRecipientSuggestions ? (
+                <div className="insights-recipient-suggestions" role="listbox">
+                  {filteredRecipientSuggestions.map((item) => (
+                    <button
+                      key={`${normalizeEmail(item.email)}-${item.label}`}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => selectRecipientSuggestion(item.email)}
+                      disabled={sendingTarget !== null}
+                      role="option"
+                    >
+                      <span>{item.email}</span>
+                      <small>{item.label}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               className="btn-secondary"

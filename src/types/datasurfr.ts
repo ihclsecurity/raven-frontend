@@ -77,6 +77,10 @@ export interface DatasurfrMapProperty {
   state: string | null
   region: string | null
   country: string | null
+  gm_email?: string | null
+  gm_name?: string | null
+  sm_email?: string | null
+  sm_name?: string | null
   latitude: number
   longitude: number
 }

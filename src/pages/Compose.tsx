@@ -159,6 +159,7 @@ export default function ComposePage() {
   const guideDoneTimeoutRef = useRef<number | null>(null)
   const pendingAdvisoryScrollRef = useRef(false)
   const handleHeaderSaveRef = useRef<(overrides?: Record<string, unknown>) => Promise<void>>(async () => undefined)
+  const hydratedNotificationIdRef = useRef<number | null>(null)
   const [isGuideActive, setIsGuideActive] = useState(false)
   const [guideStepIndex, setGuideStepIndex] = useState(0)
   const [guidePopoverPosition, setGuidePopoverPosition] = useState({ top: 84, left: 20 })
@@ -171,12 +172,18 @@ export default function ComposePage() {
   // Hydrate local editor state when opening an existing draft via query param.
   useEffect(() => {
     if (!existing) return
+    if (hydratedNotificationIdRef.current === existing.id) return
+    if (notificationId === existing.id && Object.keys(fields).length > 0) {
+      hydratedNotificationIdRef.current = existing.id
+      return
+    }
+    hydratedNotificationIdRef.current = existing.id
     setFields(existing as unknown as Record<string, unknown>)
     setNotificationId(existing.id)
     const existingMap = existing as unknown as Record<string, unknown>
     const tracked = ['heading', 'severity', 'confidence', 'business_impact']
     manuallyEditedRef.current = new Set(tracked.filter((k) => toText(existingMap[k])))
-  }, [existing])
+  }, [existing, fields, notificationId])
 
   const sourceText = toText(fields.source_text)
   const generatedOutputText = toText(fields.final_text) || toText(fields.edited_text) || toText(fields.generated_text)
@@ -380,10 +387,16 @@ export default function ComposePage() {
     if (!notificationId) {
       return
     }
-    void notificationsApi.update(notificationId, { tags_json: nextTagsJson }).then((updated) => {
-      syncNotification(updated as unknown as Record<string, unknown> & { id: number })
+    void notificationsApi.update(notificationId, { tags_json: nextTagsJson }).then(() => {
+      queryClient.setQueryData(['notification', notificationId], (current: unknown) => {
+        if (current && typeof current === 'object') {
+          return { ...(current as Record<string, unknown>), tags_json: nextTagsJson }
+        }
+        return current
+      })
       void queryClient.invalidateQueries({ queryKey: ['notification-impact-map-payload', notificationId] })
       void queryClient.invalidateQueries({ queryKey: ['notification-email-preview', notificationId] })
+      void queryClient.invalidateQueries({ queryKey: ['notifications'] })
     }).catch((error) => {
       const message = error instanceof Error ? error.message : 'Failed to update impacted properties.'
       showToast(message, 'warning')
@@ -734,10 +747,8 @@ export default function ComposePage() {
             settings={settings}
           />
         </div>
-      </div>
 
-      {analysisComplete ? (
-        <section className="compose-impact-generate-row">
+        <section className="compose-impact-generate-row compose-workbench-template-row">
           <div id="compose-guide-impact" className={guideClassFor('impact')}>
             <ComposeAffectedProperties
               fields={fields}
@@ -768,7 +779,7 @@ export default function ComposePage() {
             />
           </div>
         </section>
-      ) : null}
+      </div>
 
       <div id="compose-guide-advisory" className={guideClassFor('final-advisory')}>
         <ComposeRightPanel

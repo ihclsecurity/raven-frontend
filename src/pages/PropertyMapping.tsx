@@ -1,21 +1,22 @@
 /**
  * Module: Property Mapping
- * Purpose: Admin UI for reviewing and editing the property mapping workbook.
- * Context: Saves changes to the Excel source used by property impact mapping.
+ * Purpose: Admin UI for reviewing and editing property mapping rows.
+ * Context: Saves changes to MongoDB for property impact mapping.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Plus, RotateCcw, Save, Trash2, X } from 'lucide-react'
 import { propertyMappingApi } from '../api/propertyMapping'
 import { useAuth } from '../auth/AuthContext'
-import type { PropertyMappingCellValue, PropertyMappingRow } from '../types/propertyMapping'
+import type { PropertyMappingCellValue, PropertyMappingListResponse, PropertyMappingRow } from '../types/propertyMapping'
 import { hasFullAccess } from '../utils/authRoles'
 
 const STATUS_OPTIONS = ['Operational', 'Pipeline', 'Future', 'Currently Inactive', 'To be terminated']
 const TABLE_COLUMNS = ['Property Name', 'Status', 'Brand', 'City', 'State', 'Region', 'Country', 'Latitude', 'Longitude']
 const PRIORITY_EDIT_COLUMNS = ['Property Name', 'Status', 'Brand', 'City', 'State', 'Region', 'Country', 'Latitude', 'Longitude', 'Inventory']
 const CREATE_REQUIRED_COLUMNS = ['Property Name', 'Status', 'City', 'State', 'Region', 'Country', 'Latitude', 'Longitude']
+const PROPERTY_MAPPING_PAGE_SIZE = 20
 const CREATE_HIDDEN_COLUMNS = [
   'Match Status',
   'Matched Old Property Name',
@@ -78,6 +79,9 @@ export default function PropertyMappingPage() {
   const [isAdding, setIsAdding] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedRowId, setSavedRowId] = useState<number | null>(null)
+  const [focusedEditColumn, setFocusedEditColumn] = useState<string | null>(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const editFieldRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({})
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['property-mapping'],
@@ -108,6 +112,14 @@ export default function PropertyMappingPage() {
     setSaveError(null)
   }, [selectedRow])
 
+  useEffect(() => {
+    if (!focusedEditColumn || (!selectedRow && !isAdding)) return
+    const frame = window.requestAnimationFrame(() => {
+      editFieldRefs.current[focusedEditColumn]?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [focusedEditColumn, isAdding, selectedRow])
+
   const updateMutation = useMutation({
     mutationFn: ({ rowId, values }: { rowId: number; values: Record<string, PropertyMappingCellValue> }) =>
       propertyMappingApi.updateRow(rowId, { values }),
@@ -131,10 +143,31 @@ export default function PropertyMappingPage() {
     mutationFn: (values: Record<string, PropertyMappingCellValue>) =>
       propertyMappingApi.createRow({ values }),
     onSuccess: async (row) => {
+      queryClient.setQueryData<PropertyMappingListResponse>(['property-mapping'], (current) => {
+        if (!current) return current
+        const existingRows = current.rows.filter((item) => item.row_id !== row.row_id)
+        const nextRows = [row, ...existingRows]
+        const summary = nextRows.reduce(
+          (acc, item) => {
+            acc.total += 1
+            acc[statusBucket(cellToInputValue(item.values.Status))] += 1
+            return acc
+          },
+          { total: 0, operational: 0, pipeline: 0, future: 0, other: 0 },
+        )
+        return {
+          ...current,
+          rows: nextRows,
+          summary,
+        }
+      })
       setIsAdding(false)
       setSelectedRowId(row.row_id)
       setSavedRowId(row.row_id)
       setDraft(row.values)
+      setSearch(cellToInputValue(row.values['Property Name']))
+      setStatusFilter('all')
+      setCurrentPage(1)
       setSaveError(null)
       window.setTimeout(() => setSavedRowId(null), 2200)
       await Promise.all([
@@ -177,6 +210,22 @@ export default function PropertyMappingPage() {
     })
   }, [columns, data?.rows, search, statusFilter])
 
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [search, statusFilter])
+
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / PROPERTY_MAPPING_PAGE_SIZE))
+  const normalizedPage = Math.min(currentPage, pageCount)
+  const pageStartIndex = (normalizedPage - 1) * PROPERTY_MAPPING_PAGE_SIZE
+  const paginatedRows = filteredRows.slice(pageStartIndex, pageStartIndex + PROPERTY_MAPPING_PAGE_SIZE)
+  const pageEndIndex = pageStartIndex + paginatedRows.length
+
+  useEffect(() => {
+    if (currentPage > pageCount) {
+      setCurrentPage(pageCount)
+    }
+  }, [currentPage, pageCount])
+
   const changedValues = selectedRow && !isAdding ? buildChangedValues(editColumns, selectedRow, draft) : {}
   const createValues = isAdding ? Object.fromEntries(createColumns.map((column) => [column, draft[column] ?? null])) : {}
   const missingCreateFields = isAdding
@@ -197,11 +246,21 @@ export default function PropertyMappingPage() {
     setDraft((current) => ({ ...current, [column]: value }))
   }
 
+  const selectRowForEdit = (rowId: number, column?: string) => {
+    setIsAdding(false)
+    setSelectedRowId(rowId)
+    setFocusedEditColumn(column ?? null)
+  }
+
   const startAddingProperty = () => {
     if (!columns.length) return
     setIsAdding(true)
     setSelectedRowId(null)
     setDraft(buildNewPropertyDraft(columns))
+    setFocusedEditColumn('Property Name')
+    setSearch('')
+    setStatusFilter('all')
+    setCurrentPage(1)
     setSaveError(null)
   }
 
@@ -233,7 +292,7 @@ export default function PropertyMappingPage() {
   const removeSelectedRow = () => {
     if (!selectedRow || isAdding || deleteMutation.isPending) return
     const propertyName = cellToInputValue(selectedRow.values['Property Name']) || `row ${selectedRow.row_id}`
-    const confirmed = window.confirm(`Remove ${propertyName} from property mapping? This writes to the Excel workbook.`)
+    const confirmed = window.confirm(`Remove ${propertyName} from property mapping? This writes to MongoDB.`)
     if (!confirmed) return
     deleteMutation.mutate(selectedRow.row_id)
   }
@@ -244,13 +303,11 @@ export default function PropertyMappingPage() {
     <section className="property-mapping-page">
       <div className="property-mapping-hero">
         <div>
-          <span className="property-mapping-kicker">Admin workspace</span>
-          <h2>Property Mapping</h2>
-          <p>Review the workbook on the left. Select a property to edit it, or add a new property row.</p>
+          <p>Review the property mappings on the left. Select a property to edit it, or add a new property row.</p>
         </div>
         <div className="property-mapping-disclaimer" role="note">
           <AlertTriangle size={16} />
-          Saved properties are written to Excel and become available to map data after refresh or next app open.
+          Saved properties are stored in MongoDB and become available to map data after refresh.
         </div>
       </div>
 
@@ -300,8 +357,8 @@ export default function PropertyMappingPage() {
 
       {error ? <div className="property-mapping-error">{error instanceof Error ? error.message : 'Failed to load property mapping.'}</div> : null}
 
-      <div className="property-mapping-layout">
-        <div className="property-mapping-table-shell">
+        <div className="property-mapping-layout">
+        <div className="property-mapping-table-shell raven-dark-scroll">
           <table className="property-mapping-table">
             <thead>
               <tr>
@@ -317,21 +374,48 @@ export default function PropertyMappingPage() {
                   <td colSpan={visibleColumns.length + 1} className="property-mapping-loading">Loading property mapping...</td>
                 </tr>
               ) : null}
-              {!isLoading && filteredRows.map((row) => {
+              {!isLoading && isAdding ? (
+                <tr className="is-active is-dirty">
+                  <td className="property-mapping-row-header">New</td>
+                  {visibleColumns.map((column) => (
+                    <td key={`new-property-${column}`} className={column === 'Property Name' ? 'property-mapping-name-cell' : ''}>
+                      <button
+                        type="button"
+                        className="property-mapping-cell-button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setFocusedEditColumn(column)
+                        }}
+                        title={`Edit ${column}`}
+                      >
+                        {cellToInputValue(draft[column]) || (column === 'Property Name' ? 'New property' : '-')}
+                      </button>
+                    </td>
+                  ))}
+                </tr>
+              ) : null}
+              {!isLoading && paginatedRows.map((row) => {
                 const active = row.row_id === selectedRowId
                 return (
                   <tr
                     key={row.row_id}
                     className={active && !isAdding ? 'is-active' : ''}
-                    onClick={() => {
-                      setIsAdding(false)
-                      setSelectedRowId(row.row_id)
-                    }}
+                    onClick={() => selectRowForEdit(row.row_id)}
                   >
                     <td className="property-mapping-row-header">{row.row_id}</td>
                     {visibleColumns.map((column) => (
                       <td key={`${row.row_id}-${column}`} className={column === 'Property Name' ? 'property-mapping-name-cell' : ''}>
-                        <span>{cellToInputValue(row.values[column]) || '-'}</span>
+                        <button
+                          type="button"
+                          className="property-mapping-cell-button"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            selectRowForEdit(row.row_id, column)
+                          }}
+                          title={`Edit ${column}: ${cellToInputValue(row.values[column]) || '-'}`}
+                        >
+                          {cellToInputValue(row.values[column]) || '-'}
+                        </button>
                       </td>
                     ))}
                   </tr>
@@ -346,7 +430,34 @@ export default function PropertyMappingPage() {
           </table>
         </div>
 
-        <aside className="property-mapping-editor">
+        {!isLoading && filteredRows.length ? (
+          <div className="property-mapping-pagination" aria-label="Property mapping pagination">
+            <span>
+              Showing {pageStartIndex + 1}-{pageEndIndex} of {filteredRows.length} properties
+            </span>
+            <div>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                disabled={normalizedPage <= 1}
+              >
+                Previous
+              </button>
+              <strong>Page {normalizedPage} of {pageCount}</strong>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setCurrentPage((page) => Math.min(pageCount, page + 1))}
+                disabled={normalizedPage >= pageCount}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <aside className="property-mapping-editor raven-dark-scroll">
           {isAdding || selectedRow ? (
             <>
               <div className="property-mapping-editor-head">
@@ -367,7 +478,13 @@ export default function PropertyMappingPage() {
                   <label key={column} className={column === 'Property Name' ? 'is-wide' : ''}>
                     <span>{column}</span>
                     {column === 'Status' ? (
-                      <select value={cellToInputValue(draft[column])} onChange={(event) => setDraftValue(column, event.target.value)}>
+                      <select
+                        ref={(element) => {
+                          editFieldRefs.current[column] = element
+                        }}
+                        value={cellToInputValue(draft[column])}
+                        onChange={(event) => setDraftValue(column, event.target.value)}
+                      >
                         {STATUS_OPTIONS.map((status) => (
                           <option key={status} value={status}>{status}</option>
                         ))}
@@ -377,6 +494,9 @@ export default function PropertyMappingPage() {
                       </select>
                     ) : (
                       <input
+                        ref={(element) => {
+                          editFieldRefs.current[column] = element
+                        }}
                         type={column === 'Latitude' || column === 'Longitude' || column === 'Inventory' || column === 'Match Score' ? 'number' : 'text'}
                         step={column === 'Latitude' || column === 'Longitude' ? 'any' : undefined}
                         value={cellToInputValue(draft[column])}
@@ -405,7 +525,7 @@ export default function PropertyMappingPage() {
             </>
           ) : (
             <div className="property-mapping-editor-empty">
-              Select a property from the table to edit its name, status, coordinates, region, and workbook metadata.
+              Select a property from the table to edit its name, status, coordinates, region, and mapping metadata.
             </div>
           )}
         </aside>

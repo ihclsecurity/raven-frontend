@@ -48,6 +48,28 @@ export interface LoginResponse {
   user: AuthUser
 }
 
+export interface LoginOtpRequiredResponse {
+  requires_otp: true
+  challenge_id: string
+  email_hint: string
+  expires_at?: string
+}
+
+export type PasswordLoginResponse = LoginResponse | LoginOtpRequiredResponse
+
+export interface OtpVerifyRequest {
+  challenge_id: string
+  otp: string
+}
+
+export interface OtpResendRequest {
+  challenge_id: string
+}
+
+export interface OtpResendResponse {
+  message: string
+}
+
 export interface CreateUserPayload {
   email: string
   password: string

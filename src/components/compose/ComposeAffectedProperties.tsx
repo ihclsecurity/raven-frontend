@@ -4,7 +4,7 @@
  * Context: Keeps property impact parsing close to the Compose analysis workflow.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { datasurfrApi } from '../../api/datasurfr'
 import type { DatasurfrMapProperty } from '../../types/datasurfr'
@@ -20,10 +20,44 @@ function normalizePropertyName(value: string): string {
   return value.toLowerCase().replace(/\s+/g, ' ').trim()
 }
 
+function propertyListSignature(values: string[]): string {
+  return values.map((item) => normalizePropertyName(item)).join('|')
+}
+
+function contactDisplay(name?: string | null, email?: string | null): string {
+  const cleanedName = String(name || '').trim()
+  const cleanedEmail = String(email || '').trim()
+  if (cleanedName && cleanedEmail) return `${cleanedName} <${cleanedEmail}>`
+  return cleanedName || cleanedEmail
+}
+
+function splitEmails(value?: string | null): string[] {
+  return String(value || '')
+    .split(/[;,]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function propertyContactEmails(property: DatasurfrMapProperty): string[] {
+  return Array.from(new Set([
+    ...splitEmails(property.gm_email),
+    ...splitEmails(property.sm_email),
+  ]))
+}
+
+function pointContactDisplay(point: Record<string, unknown> | undefined, prefix: 'gm' | 'sm'): string {
+  if (!point) return ''
+  return contactDisplay(
+    point[`${prefix}_name`] as string | null | undefined,
+    point[`${prefix}_email`] as string | null | undefined,
+  )
+}
+
 export function ComposeAffectedProperties({ fields, notificationId, onTagsChange, className }: ComposeAffectedPropertiesProps) {
   const [showAllAffectedProperties, setShowAllAffectedProperties] = useState(false)
   const [manualPropertyQuery, setManualPropertyQuery] = useState('')
   const [isAddPropertyOpen, setIsAddPropertyOpen] = useState(false)
+  const pendingLocalSignatureRef = useRef<string | null>(null)
 
   const parsedTags = useMemo(() => {
     const raw = fields.tags_json
@@ -105,13 +139,25 @@ export function ComposeAffectedProperties({ fields, notificationId, onTagsChange
   const [selectedAffectedProperties, setSelectedAffectedProperties] = useState<string[]>([])
 
   const extractedSignature = useMemo(
-    () => extractedAffectedProperties.map((item) => normalizePropertyName(item)).join('|'),
+    () => propertyListSignature(extractedAffectedProperties),
     [extractedAffectedProperties],
   )
 
   useEffect(() => {
+    pendingLocalSignatureRef.current = null
     setSelectedAffectedProperties(extractedAffectedProperties)
-  }, [notificationId, extractedSignature, extractedAffectedProperties])
+  }, [notificationId])
+
+  useEffect(() => {
+    const pendingSignature = pendingLocalSignatureRef.current
+    if (pendingSignature) {
+      if (pendingSignature === extractedSignature) {
+        pendingLocalSignatureRef.current = null
+      }
+      return
+    }
+    setSelectedAffectedProperties(extractedAffectedProperties)
+  }, [extractedSignature, extractedAffectedProperties])
 
   const selectedPropertyKeys = useMemo(
     () => new Set(selectedAffectedProperties.map((item) => normalizePropertyName(item))),
@@ -151,6 +197,21 @@ export function ComposeAffectedProperties({ fields, notificationId, onTagsChange
     return byName
   }, [mapProperties])
 
+  const impactedPointByName = useMemo(() => {
+    const byName = new Map<string, Record<string, unknown>>()
+    const points = Array.isArray(parsedTags?.impacted_properties_points)
+      ? parsedTags.impacted_properties_points
+      : []
+    for (const item of points) {
+      if (!item || typeof item !== 'object') continue
+      const record = item as Record<string, unknown>
+      const name = String(record.name || record.property_name || '').trim()
+      if (!name) continue
+      byName.set(normalizePropertyName(name), record)
+    }
+    return byName
+  }, [parsedTags])
+
   const filteredPropertyOptions = useMemo(() => {
     const query = manualPropertyQuery.trim().toLowerCase()
     const candidates = availablePropertyNames
@@ -180,6 +241,11 @@ export function ComposeAffectedProperties({ fields, notificationId, onTagsChange
         region: property.region,
         state: property.state,
         country: property.country,
+        gm_name: property.gm_name,
+        gm_email: property.gm_email,
+        sm_name: property.sm_name,
+        sm_email: property.sm_email,
+        contact_emails: propertyContactEmails(property),
       }))
     nextTags.impacted_properties_all = next
     nextTags.impacted_properties_preview = next.slice(0, 20)
@@ -187,6 +253,23 @@ export function ComposeAffectedProperties({ fields, notificationId, onTagsChange
     nextTags.impacted_property_count = next.length
     onTagsChange(JSON.stringify(nextTags))
   }
+
+  useEffect(() => {
+    if (!selectedAffectedProperties.length || !mapPropertyByName.size) return
+    const currentPoints = Array.isArray(parsedTags?.impacted_properties_points)
+      ? parsedTags.impacted_properties_points
+      : []
+    const hasMissingContacts = selectedAffectedProperties.some((name) => {
+      const point = impactedPointByName.get(normalizePropertyName(name))
+      const property = mapPropertyByName.get(normalizePropertyName(name))
+      if (!property) return false
+      const pointHasContacts = Boolean(point?.gm_email || point?.sm_email)
+      const propertyHasContacts = Boolean(property.gm_email || property.sm_email)
+      return propertyHasContacts && !pointHasContacts
+    })
+    if (!hasMissingContacts && currentPoints.length >= selectedAffectedProperties.length) return
+    persistSelectedProperties(selectedAffectedProperties)
+  }, [impactedPointByName, mapPropertyByName, parsedTags, selectedAffectedProperties])
 
   const addAffectedProperty = (value: string) => {
     const name = value.trim()
@@ -196,6 +279,7 @@ export function ComposeAffectedProperties({ fields, notificationId, onTagsChange
       return
     }
     const next = [...selectedAffectedProperties, name]
+    pendingLocalSignatureRef.current = propertyListSignature(next)
     setSelectedAffectedProperties(next)
     persistSelectedProperties(next)
     setManualPropertyQuery('')
@@ -205,6 +289,7 @@ export function ComposeAffectedProperties({ fields, notificationId, onTagsChange
   const removeAffectedProperty = (value: string) => {
     const key = normalizePropertyName(value)
     const next = selectedAffectedProperties.filter((item) => normalizePropertyName(item) !== key)
+    pendingLocalSignatureRef.current = propertyListSignature(next)
     setSelectedAffectedProperties(next)
     persistSelectedProperties(next)
   }
@@ -256,7 +341,7 @@ export function ComposeAffectedProperties({ fields, notificationId, onTagsChange
 
   useEffect(() => {
     setShowAllAffectedProperties(false)
-  }, [notificationId, selectedAffectedProperties.length])
+  }, [notificationId])
 
   useEffect(() => {
     setIsAddPropertyOpen(false)
@@ -366,19 +451,33 @@ export function ComposeAffectedProperties({ fields, notificationId, onTagsChange
 
       {visibleAffectedProperties.length ? (
         <ul className="affected-properties-list">
-          {visibleAffectedProperties.map((name) => (
-            <li key={name} className="affected-property-chip">
-              <span>{name}</span>
-              <button
-                type="button"
-                className="affected-property-remove"
-                onClick={() => removeAffectedProperty(name)}
-                aria-label={`Remove ${name}`}
-              >
-                x
-              </button>
-            </li>
-          ))}
+          {visibleAffectedProperties.map((name) => {
+            const property = mapPropertyByName.get(normalizePropertyName(name))
+            const point = impactedPointByName.get(normalizePropertyName(name))
+            const gmContact = pointContactDisplay(point, 'gm') || contactDisplay(property?.gm_name, property?.gm_email)
+            const smContact = pointContactDisplay(point, 'sm') || contactDisplay(property?.sm_name, property?.sm_email)
+            return (
+              <li key={name} className="affected-property-chip">
+                <span className="affected-property-chip-main">
+                  <span className="affected-property-name">{name}</span>
+                  {gmContact || smContact ? (
+                    <span className="affected-property-contacts">
+                      {gmContact ? <span><strong>GM:</strong> {gmContact}</span> : null}
+                      {smContact ? <span><strong>SM:</strong> {smContact}</span> : null}
+                    </span>
+                  ) : null}
+                </span>
+                <button
+                  type="button"
+                  className="affected-property-remove"
+                  onClick={() => removeAffectedProperty(name)}
+                  aria-label={`Remove ${name}`}
+                >
+                  x
+                </button>
+              </li>
+            )
+          })}
         </ul>
       ) : (
         <div className="compose-meta-note">

@@ -24,13 +24,33 @@
  */
 
 import client from './client'
-import type { AuthUser, CreateUserPayload, LoginResponse, UpdateUserPayload } from '../types/auth'
+import type {
+  AuthUser,
+  CreateUserPayload,
+  LoginResponse,
+  OtpResendResponse,
+  PasswordLoginResponse,
+  UpdateUserPayload,
+} from '../types/auth'
+
+const AUTH_BOOTSTRAP_TIMEOUT_MS = 3500
+const AUTH_INTERACTIVE_TIMEOUT_MS = 15000
 
 export const authApi = {
   login: (email: string, password: string) =>
-    client.post<LoginResponse>('/auth/login', { email, password }).then((r) => r.data),
-  logout: () => client.post('/auth/logout').then((r) => r.data),
-  me: () => client.get<AuthUser>('/auth/me').then((r) => r.data),
+    client
+      .post<PasswordLoginResponse>('/auth/login', { email, password }, { timeout: AUTH_INTERACTIVE_TIMEOUT_MS })
+      .then((r) => r.data),
+  verifyOtp: (challengeId: string, otp: string) =>
+    client
+      .post<LoginResponse>('/auth/login/verify-otp', { challenge_id: challengeId, otp }, { timeout: AUTH_INTERACTIVE_TIMEOUT_MS })
+      .then((r) => r.data),
+  resendOtp: (challengeId: string) =>
+    client
+      .post<OtpResendResponse>('/auth/login/resend-otp', { challenge_id: challengeId }, { timeout: AUTH_INTERACTIVE_TIMEOUT_MS })
+      .then((r) => r.data),
+  logout: () => client.post('/auth/logout', undefined, { timeout: AUTH_BOOTSTRAP_TIMEOUT_MS }).then((r) => r.data),
+  me: () => client.get<AuthUser>('/auth/me', { timeout: AUTH_BOOTSTRAP_TIMEOUT_MS }).then((r) => r.data),
   listUsers: () => client.get<AuthUser[]>('/auth/users').then((r) => r.data),
   createUser: (payload: CreateUserPayload) => client.post<AuthUser>('/auth/users', payload).then((r) => r.data),
   updateUser: (userId: number, payload: UpdateUserPayload) =>
