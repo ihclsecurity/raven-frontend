@@ -203,10 +203,12 @@ textarea {
 }
 
 .app-sidebar-logo {
-  width: min(100%, 164px);
-  height: auto;
-  max-height: 92px;
-  object-fit: contain;
+  width: 250px;
+  /* width: min(100%, 264px); */
+  /* height: auto; */
+  height: 190px;
+  /* object-fit: contain; */
+  object-fit: cover;
   border-radius: 0;
   box-shadow: var(--shadow-lg);
 }
@@ -6443,9 +6445,9 @@ body {
 }
 
 .app-sidebar-logo {
-  width: min(100%, 164px);
-  height: auto;
-  max-height: 92px;
+  /* width: min(100%, 164px); */
+  /* height: auto;
+  max-height: 92px; */
   border-radius: 0;
 }
 
@@ -12665,10 +12667,13 @@ th.property-mapping-actions-header {
 
 /* Logo + brand label cleanup */
 .app-sidebar-logo {
-  width: min(100%, 164px);
+  /* width: min(100%, 164px);
   height: auto;
-  max-height: 92px;
-  object-fit: contain;
+  max-height: 92px; */
+    width: 250px;
+    height: 190px;
+  /* object-fit: contain; */
+  object-fit: cover;
   border: 0 !important;
   border-radius: 0 !important;
   box-shadow: none !important;
