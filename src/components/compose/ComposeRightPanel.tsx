@@ -4,15 +4,17 @@
  * Context: Keep this module cohesive because multiple screens and flows rely on it.
  */
 
-import { useEffect, useMemo, useState, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Loader2, RefreshCw, Save as SaveIcon, Users } from 'lucide-react'
 import { EmailRichEditor } from './EmailRichEditor'
 import type { Template } from '../../types/template'
 import type { GenerationPhase } from '../../pages/Compose'
+import { datasurfrApi } from '../../api/datasurfr'
 import { emailGroupsApi } from '../../api/emailGroups'
 import { approvalsApi } from '../../api/approvals'
 import { notificationsApi } from '../../api/notifications'
+import type { DatasurfrMapProperty } from '../../types/datasurfr'
 import { normalizeEmailPreviewFrame } from '../../utils/emailPreviewFrame'
 import {
   IMPACT_MAP_PLACEHOLDER,
@@ -46,6 +48,100 @@ interface ComposeRightPanelProps {
 type OutputMode = 'text' | 'editor' | 'email'
 const CUSTOM_EMAIL_TEMPLATE_MARKER = 'OSINT_EMAIL_TEMPLATE_CUSTOM'
 
+type PropertyEmailSuggestion = {
+  email: string
+  label: string
+}
+
+function normalizePropertyName(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function splitEmails(value?: string | null): string[] {
+  return String(value || '')
+    .split(/[;,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function isLikelyEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
+}
+
+function uniqueEmails(values: string[]): string[] {
+  const seen = new Set<string>()
+  const output: string[] = []
+  for (const value of values) {
+    const email = value.trim()
+    if (!email || !isLikelyEmail(email)) continue
+    const key = normalizeEmail(email)
+    if (seen.has(key)) continue
+    seen.add(key)
+    output.push(email)
+  }
+  return output
+}
+
+function parseTagsJson(value: unknown): Record<string, unknown> | null {
+  if (!value) return null
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+    } catch {
+      return null
+    }
+  }
+  return typeof value === 'object' ? (value as Record<string, unknown>) : null
+}
+
+function propertyEmailSuggestions(property: DatasurfrMapProperty): PropertyEmailSuggestion[] {
+  const propertyName = String(property.property_name || '').trim()
+  const suggestions: PropertyEmailSuggestion[] = []
+  for (const email of splitEmails(property.gm_email)) {
+    suggestions.push({ email, label: `GM - ${propertyName}` })
+  }
+  for (const email of splitEmails(property.sm_email)) {
+    suggestions.push({ email, label: `SM - ${propertyName}` })
+  }
+  return suggestions
+}
+
+function pointEmailSuggestions(point: Record<string, unknown>): PropertyEmailSuggestion[] {
+  const propertyName = String(point.name || point.property_name || '').trim()
+  const suggestions: PropertyEmailSuggestion[] = []
+  for (const email of splitEmails(point.gm_email as string | null | undefined)) {
+    suggestions.push({ email, label: `GM - ${propertyName}` })
+  }
+  for (const email of splitEmails(point.sm_email as string | null | undefined)) {
+    suggestions.push({ email, label: `SM - ${propertyName}` })
+  }
+  if (Array.isArray(point.contact_emails)) {
+    for (const email of point.contact_emails.map((item) => String(item || '').trim())) {
+      suggestions.push({ email, label: propertyName ? `Mapped contact - ${propertyName}` : 'Mapped contact' })
+    }
+  }
+  return suggestions
+}
+
+function uniqueEmailSuggestions(values: PropertyEmailSuggestion[]): PropertyEmailSuggestion[] {
+  const seen = new Set<string>()
+  const output: PropertyEmailSuggestion[] = []
+  for (const item of values) {
+    const email = item.email.trim()
+    if (!email || !isLikelyEmail(email)) continue
+    const key = normalizeEmail(email)
+    if (seen.has(key)) continue
+    seen.add(key)
+    output.push({ email, label: item.label })
+  }
+  return output
+}
+
 export function ComposeRightPanel({
   advisoryRef,
   notificationId,
@@ -72,6 +168,7 @@ export function ComposeRightPanel({
   const [editorHtml, setEditorHtml] = useState('')
   const [editorHasUserChanges, setEditorHasUserChanges] = useState(false)
   const [emailDestination, setEmailDestination] = useState('')
+  const [selectedRecipientEmails, setSelectedRecipientEmails] = useState<string[]>([])
   const [emailGroupMenuOpen, setEmailGroupMenuOpen] = useState(false)
   const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([])
   const [selectedApproverUserId, setSelectedApproverUserId] = useState<number | ''>('')
@@ -81,6 +178,12 @@ export function ComposeRightPanel({
   const [resolvedEmailPreviewHtml, setResolvedEmailPreviewHtml] = useState('')
   const [renderingBrowserMapPreview, setRenderingBrowserMapPreview] = useState(false)
   const [browserMapPreviewError, setBrowserMapPreviewError] = useState<string | null>(null)
+  const previousAutoRecipientEmailsRef = useRef<string[]>([])
+  const { data: mapProperties = [] } = useQuery({
+    queryKey: ['map-view-properties'],
+    queryFn: () => datasurfrApi.listMapProperties(),
+    staleTime: 5 * 60 * 1000,
+  })
   const { data: emailGroups = [] } = useQuery({
     queryKey: ['email-groups-compose'],
     queryFn: () => emailGroupsApi.list(true),
@@ -159,6 +262,84 @@ export function ComposeRightPanel({
     () => emailGroups.filter((group) => selectedGroupIds.includes(group.id)).map((group) => group.name),
     [emailGroups, selectedGroupIds],
   )
+  const parsedTags = useMemo(() => parseTagsJson(fields.tags_json), [fields.tags_json])
+  const mapPropertyByName = useMemo(() => {
+    const byName = new Map<string, DatasurfrMapProperty>()
+    for (const property of mapProperties) {
+      const name = String(property.property_name || '').trim()
+      if (!name) continue
+      const key = normalizePropertyName(name)
+      if (!byName.has(key)) {
+        byName.set(key, property)
+      }
+    }
+    return byName
+  }, [mapProperties])
+  const allPropertyEmailSuggestions = useMemo(
+    () => uniqueEmailSuggestions(mapProperties.flatMap((property) => propertyEmailSuggestions(property))),
+    [mapProperties],
+  )
+  const impactedPropertyNames = useMemo(() => {
+    const fromAllTags = Array.isArray(parsedTags?.impacted_properties_all)
+      ? parsedTags.impacted_properties_all.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
+    if (fromAllTags.length) return Array.from(new Set(fromAllTags))
+    const fromPreviewTags = Array.isArray(parsedTags?.impacted_properties_preview)
+      ? parsedTags.impacted_properties_preview.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
+    return Array.from(new Set(fromPreviewTags))
+  }, [parsedTags])
+  const impactedPropertyEmailSuggestions = useMemo(() => {
+    const fromPoints = Array.isArray(parsedTags?.impacted_properties_points)
+      ? parsedTags.impacted_properties_points
+          .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+          .flatMap((point) => pointEmailSuggestions(point))
+      : []
+    const fromNames = impactedPropertyNames
+      .map((name) => mapPropertyByName.get(normalizePropertyName(name)))
+      .filter((property): property is DatasurfrMapProperty => Boolean(property))
+      .flatMap((property) => propertyEmailSuggestions(property))
+    return uniqueEmailSuggestions([...fromPoints, ...fromNames])
+  }, [impactedPropertyNames, mapPropertyByName, parsedTags])
+  const impactedRecipientEmails = useMemo(
+    () => uniqueEmails(impactedPropertyEmailSuggestions.map((item) => item.email)),
+    [impactedPropertyEmailSuggestions],
+  )
+  const impactedRecipientEmailSignature = useMemo(
+    () => impactedRecipientEmails.map((email) => normalizeEmail(email)).sort().join('|'),
+    [impactedRecipientEmails],
+  )
+  const filteredRecipientSuggestions = useMemo(() => {
+    const selected = new Set(selectedRecipientEmails.map((email) => normalizeEmail(email)))
+    const query = emailDestination.trim().toLowerCase()
+    return allPropertyEmailSuggestions
+      .filter((item) => !selected.has(normalizeEmail(item.email)))
+      .filter((item) => {
+        if (!query) return true
+        return item.email.toLowerCase().includes(query) || item.label.toLowerCase().includes(query)
+      })
+      .slice(0, 8)
+  }, [allPropertyEmailSuggestions, emailDestination, selectedRecipientEmails])
+  const addRecipientEmails = (values: string[]) => {
+    const nextEmails = uniqueEmails(values)
+    if (!nextEmails.length) return
+    setSelectedRecipientEmails((prev) => uniqueEmails([...prev, ...nextEmails]))
+    setSelectedGroupIds([])
+    setEmailDestination('')
+  }
+  const removeRecipientEmail = (email: string) => {
+    const key = normalizeEmail(email)
+    setSelectedRecipientEmails((prev) => prev.filter((item) => normalizeEmail(item) !== key))
+  }
+
+  useEffect(() => {
+    const previousAutoKeys = new Set(previousAutoRecipientEmailsRef.current.map((email) => normalizeEmail(email)))
+    setSelectedRecipientEmails((prev) => {
+      const manuallySelected = prev.filter((email) => !previousAutoKeys.has(normalizeEmail(email)))
+      return uniqueEmails([...impactedRecipientEmails, ...manuallySelected])
+    })
+    previousAutoRecipientEmailsRef.current = impactedRecipientEmails
+  }, [impactedRecipientEmailSignature, impactedRecipientEmails])
 
   useEffect(() => {
     if (editorDirty || hasCustomEmailPreview || !mapPreviewHtml) {
@@ -301,7 +482,7 @@ export function ComposeRightPanel({
       await sendToEmailGroups(selectedGroupIds)
       return
     }
-    const destination = emailDestination.trim()
+    const destinations = uniqueEmails([...selectedRecipientEmails, ...splitEmails(emailDestination)])
     if (!notificationId) {
       onShowToast('Generate content first')
       return
@@ -315,8 +496,8 @@ export function ComposeRightPanel({
       setEmailSendFeedback('Select a superadmin approver before requesting approval.')
       return
     }
-    if (!destination) {
-      onShowToast('Enter a recipient email')
+    if (!destinations.length) {
+      onShowToast('Enter or select at least one recipient email')
       return
     }
 
@@ -332,10 +513,10 @@ export function ComposeRightPanel({
         title: defaultHeading || emailSubject || `Advisory #${notificationId}`,
         subject: emailSubject || defaultHeading || undefined,
         message_text: outputText,
-        recipient_emails: [destination],
+        recipient_emails: destinations,
         recipient_group_ids: [],
       })
-      setEmailSendFeedback(`Approval request sent for ${destination}`)
+      setEmailSendFeedback(`Approval request sent to ${destinations.length} recipient(s)`)
       onShowToast('Sent for approval')
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to send email'
@@ -617,7 +798,7 @@ export function ComposeRightPanel({
               <div className="compose-canvas compose-canvas-preview">
                 {isFetchingMapPreview && !editorDirty ? (
                   <div className="compose-meta-note" style={{ padding: '10px 12px' }}>
-                    {isFetchingEmailPreviewShell ? 'Loading email preview...' : 'Rendering live impact map snapshot...'}
+                  {isFetchingEmailPreviewShell ? 'Loading email preview...' : 'Preparing affected property list...'}
                   </div>
                 ) : null}
                 {browserMapPreviewError && !editorDirty ? (
@@ -665,80 +846,143 @@ export function ComposeRightPanel({
             <div className="compose-email-card">
               <div className="compose-email-card-title">SMTP Email</div>
               <div className="compose-email-send-grid">
-                <input
-                  className="compose-email-input compose-email-recipient-input"
-                  value={emailDestination}
-                  onChange={(e) => {
-                    setEmailDestination(e.target.value)
-                    setSelectedGroupIds([])
-                  }}
-                  placeholder="Recipient email address"
-                />
-                <div className="compose-email-group-trigger" style={{ position: 'relative' }}>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => setEmailGroupMenuOpen((open) => !open)}
-                    disabled={sendingEmail || !notificationId}
-                    title="Send to email group"
-                    aria-label="Send to email group"
-                  >
-                    <Users size={14} />
-                  </button>
-                  {emailGroupMenuOpen ? (
-                    <div style={{ position: 'absolute', top: '110%', right: 0, minWidth: 240, background: menuSurfaceBg, border: `1px solid ${menuBorder}`, borderRadius: 8, zIndex: 20, maxHeight: 220, overflow: 'auto', boxShadow: '0 8px 20px rgba(15,23,42,0.25)' }}>
-                      {emailGroups.map((group) => (
+                <div className="compose-email-recipient-picker">
+                  <div className="compose-email-recipient-search">
+                    <input
+                      className="compose-email-input compose-email-recipient-input"
+                      value={emailDestination}
+                      onChange={(e) => {
+                        setEmailDestination(e.target.value)
+                        setSelectedGroupIds([])
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ',' || event.key === ';' || event.key === 'Tab') {
+                          if (emailDestination.trim()) {
+                            event.preventDefault()
+                            addRecipientEmails(splitEmails(emailDestination))
+                          }
+                        } else if (event.key === 'Escape') {
+                          setEmailDestination('')
+                        }
+                      }}
+                      placeholder={selectedRecipientEmails.length ? 'Search/add GM or SM email' : 'Recipient email address'}
+                      list="compose-property-email-suggestions"
+                      aria-label="Search or add GM/SM recipient email"
+                    />
+                    <datalist id="compose-property-email-suggestions">
+                      {allPropertyEmailSuggestions.map((item) => (
+                        <option key={`${normalizeEmail(item.email)}-${item.label}`} value={item.email}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </datalist>
+                  </div>
+                  {emailDestination.trim() && filteredRecipientSuggestions.length > 0 ? (
+                    <div className="compose-email-recipient-suggestions">
+                      {filteredRecipientSuggestions.map((item) => (
                         <button
-                          key={group.id}
+                          key={`${normalizeEmail(item.email)}-${item.label}`}
                           type="button"
-                          style={{
-                            display: 'block',
-                            width: '100%',
-                            textAlign: 'left',
-                            border: 0,
-                            borderRadius: 0,
-                            padding: '9px 10px',
-                            cursor: 'pointer',
-                            backgroundColor: selectedGroupIds.includes(group.id) ? '#b7ddc7' : rowDefaultBg,
-                            color: selectedGroupIds.includes(group.id) ? '#166534' : rowDefaultText,
-                            fontWeight: selectedGroupIds.includes(group.id) ? 700 : 500,
-                          }}
-                          onClick={() => {
-                            setSelectedGroupIds((prev) =>
-                              prev.includes(group.id) ? prev.filter((id) => id !== group.id) : [...prev, group.id],
-                            )
-                            setEmailDestination('')
-                          }}
+                          onClick={() => addRecipientEmails([item.email])}
+                          disabled={sendingEmail}
                         >
-                          {group.name}
+                          <span>{item.email}</span>
+                          <small>{item.label}</small>
                         </button>
                       ))}
-                      {emailGroups.length === 0 ? (
-                        <div style={{ padding: 8, fontSize: 12, color: '#64748b' }}>No email groups found</div>
-                      ) : null}
+                    </div>
+                  ) : null}
+                  {impactedRecipientEmails.length > 0 ? (
+                    <div className="compose-email-recipient-hint">
+                      Auto-filled from affected property GM/SM contacts.
+                    </div>
+                  ) : null}
+                  {selectedRecipientEmails.length > 0 ? (
+                    <div className="compose-email-recipient-chips" aria-label="Selected recipient emails">
+                      {selectedRecipientEmails.map((email) => (
+                        <span key={normalizeEmail(email)} className="compose-email-recipient-chip">
+                          {email}
+                          <button
+                            type="button"
+                            onClick={() => removeRecipientEmail(email)}
+                            aria-label={`Remove ${email}`}
+                            disabled={sendingEmail}
+                          >
+                            x
+                          </button>
+                        </span>
+                      ))}
                     </div>
                   ) : null}
                 </div>
-                <select
-                  className="approval-approver-select compose-approver-select"
-                  value={selectedApproverUserId}
-                  onChange={(event) => setSelectedApproverUserId(event.target.value ? Number(event.target.value) : '')}
-                  disabled={sendingEmail || !notificationId}
-                  aria-label="Select superadmin approver"
-                >
-                  <option value="">Approver</option>
-                  {superadmins.map((item) => (
-                    <option key={item.id} value={item.id}>{item.email}</option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="btn-primary compose-email-approval-button"
-                  onClick={() => void handleSendEmail()}
-                  disabled={sendingEmail || !notificationId || liveMapPreviewUnavailable}
-                >
-                  {sendingEmail ? 'Requesting...' : 'Send for Approval'}
-                </button>
+                <div className="compose-email-action-row">
+                  <div className="compose-email-group-trigger" style={{ position: 'relative' }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => setEmailGroupMenuOpen((open) => !open)}
+                      disabled={sendingEmail || !notificationId}
+                      title="Send to email group"
+                      aria-label="Send to email group"
+                    >
+                      <Users size={14} />
+                    </button>
+                    {emailGroupMenuOpen ? (
+                      <div style={{ position: 'absolute', top: '110%', right: 0, minWidth: 240, background: menuSurfaceBg, border: `1px solid ${menuBorder}`, borderRadius: 8, zIndex: 20, maxHeight: 220, overflow: 'auto', boxShadow: '0 8px 20px rgba(15,23,42,0.25)' }}>
+                        {emailGroups.map((group) => (
+                          <button
+                            key={group.id}
+                            type="button"
+                            style={{
+                              display: 'block',
+                              width: '100%',
+                              textAlign: 'left',
+                              border: 0,
+                              borderRadius: 0,
+                              padding: '9px 10px',
+                              cursor: 'pointer',
+                              backgroundColor: selectedGroupIds.includes(group.id) ? '#b7ddc7' : rowDefaultBg,
+                              color: selectedGroupIds.includes(group.id) ? '#166534' : rowDefaultText,
+                              fontWeight: selectedGroupIds.includes(group.id) ? 700 : 500,
+                            }}
+                            onClick={() => {
+                              setSelectedGroupIds((prev) =>
+                                prev.includes(group.id) ? prev.filter((id) => id !== group.id) : [...prev, group.id],
+                              )
+                              setEmailDestination('')
+                              setSelectedRecipientEmails([])
+                            }}
+                          >
+                            {group.name}
+                          </button>
+                        ))}
+                        {emailGroups.length === 0 ? (
+                          <div style={{ padding: 8, fontSize: 12, color: '#64748b' }}>No email groups found</div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                  <select
+                    className="approval-approver-select compose-approver-select"
+                    value={selectedApproverUserId}
+                    onChange={(event) => setSelectedApproverUserId(event.target.value ? Number(event.target.value) : '')}
+                    disabled={sendingEmail || !notificationId}
+                    aria-label="Select superadmin approver"
+                  >
+                    <option value="">Approver</option>
+                    {superadmins.map((item) => (
+                      <option key={item.id} value={item.id}>{item.email}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn-primary compose-email-approval-button"
+                    onClick={() => void handleSendEmail()}
+                    disabled={sendingEmail || !notificationId || liveMapPreviewUnavailable}
+                  >
+                    {sendingEmail ? 'Requesting...' : 'Send for Approval'}
+                  </button>
+                </div>
               </div>
               <div className="compose-email-card-copy">
                 Sends the current preview and selected recipients to a superadmin for approval.

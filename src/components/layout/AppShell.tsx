@@ -115,18 +115,14 @@ async function listAllNotificationsForAdvisoryDedupe(): Promise<Notification[]> 
 // Theme and feed window defaults are read from browser storage first so the
 // shell preserves the last operator preference across sessions.
 function detectPreferredTheme(): ThemeMode {
-  if (typeof window === 'undefined') return 'light'
+  if (typeof window === 'undefined') return 'dark'
 
   const saved = window.localStorage.getItem(THEME_STORAGE_KEY)
   if (saved === 'light' || saved === 'dark') {
     return saved
   }
 
-  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-    return 'dark'
-  }
-
-  return 'light'
+  return 'dark'
 }
 
 function detectPreferredFeedWindow(): number {

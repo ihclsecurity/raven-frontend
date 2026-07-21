@@ -27,7 +27,12 @@
 import axios, { AxiosHeaders } from 'axios'
 import { apiBaseUrl } from './baseUrl'
 
-export const AUTH_EXPIRED_EVENT = 'raven-auth-expired'
+export type RavenApiError = Error & {
+  status?: number
+  code?: string
+  isTimeout?: boolean
+}
+
 const AUTH_COOKIE_NAME = 'raven_auth'
 
 function readCookie(name: string): string | null {
@@ -64,15 +69,12 @@ client.interceptors.request.use((config) => {
   return config
 })
 
-// The interceptor turns backend validation shapes into a single message and
-// also broadcasts auth expiry so the rest of the app can clear private state.
+// The interceptor turns backend validation shapes into a single message.
+// Auth/session clearing is handled explicitly by AuthContext so ordinary
+// protected API failures do not accidentally sign out the device.
 client.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && typeof window !== 'undefined') {
-      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
-    }
-
     const detail = error.response?.data?.detail
     let message = error.message || 'Unknown error'
 
@@ -101,7 +103,12 @@ client.interceptors.response.use(
       else if (typeof obj.error === 'string' && obj.error.trim()) message = obj.error
     }
 
-    return Promise.reject(new Error(message))
+    const normalizedError = new Error(message) as RavenApiError
+    normalizedError.status = error.response?.status
+    normalizedError.code = typeof error.code === 'string' ? error.code : undefined
+    normalizedError.isTimeout = normalizedError.code === 'ECONNABORTED' || /timeout/i.test(message)
+
+    return Promise.reject(normalizedError)
   },
 )
 
