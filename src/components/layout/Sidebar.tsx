@@ -109,7 +109,7 @@ export function Sidebar({ mobileOpen, onClose, theme, onToggleTheme }: SidebarPr
           <img
             src={logoPath}
             alt="Raven"
-            className="min-w-60 min-h-20"
+            className="app-sidebar-logo"
           />
           <button type="button" className="app-sidebar-close" onClick={onClose} aria-label="Close navigation menu">
             <X size={16} />
