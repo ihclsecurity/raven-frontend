@@ -52,8 +52,17 @@ const NotFoundPage = lazy(() => import('./pages/index'))
 
 // These wrappers keep the route table readable by hiding the lazy-loading and
 // access-control mechanics behind small helper names.
+function RouteLoadingFallback() {
+  return (
+    <div className="route-loading-surface" role="status" aria-live="polite">
+      <span className="route-loading-pulse" aria-hidden="true" />
+      <span>Loading workspace...</span>
+    </div>
+  )
+}
+
 function deferredPage(page: ReactNode) {
-  return <Suspense fallback={null}>{page}</Suspense>
+  return <Suspense fallback={<RouteLoadingFallback />}>{page}</Suspense>
 }
 
 function fullAccessPage(page: ReactNode) {

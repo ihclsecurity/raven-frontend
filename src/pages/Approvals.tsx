@@ -25,13 +25,13 @@
  * to inspect and adjust them.
  */
 
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, CheckCircle2, Clock3, Eye, Loader2, RefreshCw, Save as SaveIcon, Send, X } from 'lucide-react'
 import { approvalsApi } from '../api/approvals'
 import { notificationsApi } from '../api/notifications'
 import { useAuth } from '../auth/AuthContext'
-import { EmailRichEditor } from '../components/compose/EmailRichEditor'
+import { EmailRichEditor, type EmailRichEditorHandle } from '../components/compose/EmailRichEditor'
 import type { ApprovalListResponse, ApprovalRequest } from '../types/approval'
 import { isSuperadmin } from '../utils/authRoles'
 import { formatAppDateTime } from '../utils/dateTime'
@@ -303,10 +303,13 @@ export default function ApprovalsPage() {
   const [previewSubject, setPreviewSubject] = useState('')
   const [advisoryPreviewMode, setAdvisoryPreviewMode] = useState<AdvisoryPreviewMode>('email')
   const [advisoryEditorHtml, setAdvisoryEditorHtml] = useState('')
+  const [advisoryPreviewSnapshotHtml, setAdvisoryPreviewSnapshotHtml] = useState('')
   const [advisoryPreviewHtml, setAdvisoryPreviewHtml] = useState('')
   const [advisoryPreviewError, setAdvisoryPreviewError] = useState<string | null>(null)
   const [isRenderingAdvisoryPreview, setIsRenderingAdvisoryPreview] = useState(false)
   const [isSavingAdvisoryChanges, setIsSavingAdvisoryChanges] = useState(false)
+  const advisoryEmailEditorRef = useRef<EmailRichEditorHandle | null>(null)
+  const advisoryEditorHtmlRef = useRef('')
   const [actionStates, setActionStates] = useState<Record<number, ApprovalActionState>>({})
   const [visibleWorklistCount, setVisibleWorklistCount] = useState(APPROVAL_WORKLIST_PAGE_SIZE)
   const [visibleCompletedCount, setVisibleCompletedCount] = useState(APPROVAL_COMPLETED_PAGE_SIZE)
@@ -465,9 +468,12 @@ export default function ApprovalsPage() {
     () => advisoryEditorHtml !== savedAdvisoryHtml,
     [advisoryEditorHtml, savedAdvisoryHtml],
   )
-  const advisoryPreviewDocument = advisoryEditorDirty
-    ? (advisoryEditorHtml || savedAdvisoryHtml || advisoryPreviewHtml || plainTextHtml(previewText))
-    : (advisoryPreviewHtml || savedAdvisoryHtml || advisoryEditorHtml || plainTextHtml(previewText))
+  const currentEditedAdvisoryHtml = advisoryPreviewSnapshotHtml || (advisoryEditorDirty ? advisoryEditorHtml : '')
+  const advisoryPreviewDocument = currentEditedAdvisoryHtml
+    || savedAdvisoryHtml
+    || advisoryPreviewHtml
+    || advisoryEditorHtml
+    || plainTextHtml(previewText)
   const insightPreviewDocument = useMemo(
     () => (
       previewItem
@@ -521,17 +527,39 @@ export default function ApprovalsPage() {
     setPreviewText(previewItem.message_text || '')
     setPreviewSubject(previewItem.subject || previewItem.title)
     setAdvisoryEditorHtml(previewItem.html_body || '')
+    advisoryEditorHtmlRef.current = previewItem.html_body || ''
+    setAdvisoryPreviewSnapshotHtml('')
   }, [previewItem])
 
   useEffect(() => {
     if (!previewItem) return
     setAdvisoryPreviewMode('email')
     setAdvisoryEditorHtml(previewItem.html_body || '')
+    advisoryEditorHtmlRef.current = previewItem.html_body || ''
+    setAdvisoryPreviewSnapshotHtml('')
     setAdvisoryPreviewHtml('')
     setAdvisoryPreviewError(null)
     setIsRenderingAdvisoryPreview(false)
     setIsSavingAdvisoryChanges(false)
   }, [previewItem?.id, previewItem?.html_body])
+
+  const flushAdvisoryEditorHtml = useCallback(() => {
+    const flushedHtml = advisoryEmailEditorRef.current?.flush()
+    const html = String(flushedHtml || advisoryEditorHtmlRef.current || advisoryEditorHtml || '')
+    if (html) {
+      advisoryEditorHtmlRef.current = html
+      setAdvisoryEditorHtml(html)
+      setAdvisoryPreviewSnapshotHtml(html)
+    }
+    return html
+  }, [advisoryEditorHtml])
+
+  const switchAdvisoryPreviewMode = useCallback((mode: AdvisoryPreviewMode) => {
+    if (mode === 'email') {
+      flushAdvisoryEditorHtml()
+    }
+    setAdvisoryPreviewMode(mode)
+  }, [flushAdvisoryEditorHtml])
 
   useEffect(() => {
     const handlePreviewMessage = (event: MessageEvent) => {
@@ -552,7 +580,7 @@ export default function ApprovalsPage() {
   }, [previewItem, updateMutation])
 
   useEffect(() => {
-    if (!previewItem || !isEditableAdvisoryPreview || advisoryEditorDirty) {
+    if (!previewItem || !isEditableAdvisoryPreview || advisoryEditorDirty || savedAdvisoryHtml.trim()) {
       setAdvisoryPreviewHtml('')
       setAdvisoryPreviewError(null)
       setIsRenderingAdvisoryPreview(false)
@@ -589,6 +617,7 @@ export default function ApprovalsPage() {
     advisoryEditorDirty,
     isEditableAdvisoryPreview,
     previewItem,
+    savedAdvisoryHtml,
     previewSubject,
     previewText,
   ])
@@ -602,9 +631,12 @@ export default function ApprovalsPage() {
     setFeedback(null)
     setIsSavingAdvisoryChanges(true)
     try {
-      const shouldSaveEditorHtml = advisoryPreviewMode === 'editor' || (advisoryPreviewMode === 'email' && advisoryEditorDirty)
+      const latestEditorHtml = flushAdvisoryEditorHtml().trim()
+      const shouldSaveEditorHtml = advisoryPreviewMode === 'editor'
+        || advisoryEditorDirty
+        || Boolean(advisoryPreviewSnapshotHtml.trim())
       const htmlBody = shouldSaveEditorHtml
-        ? advisoryEditorHtml.trim()
+        ? latestEditorHtml
         : await buildApprovalAdvisoryPreviewHtml(previewItem, previewSubject, previewText)
       if (!htmlBody) {
         throw new Error('Email editor content cannot be empty.')
@@ -626,7 +658,10 @@ export default function ApprovalsPage() {
   }
 
   const downloadAdvisoryPdf = () => {
-    const printableHtml = advisoryPreviewDocument.trim()
+    const printableHtml = (advisoryPreviewMode === 'editor'
+      ? flushAdvisoryEditorHtml()
+      : advisoryPreviewDocument
+    ).trim()
     if (!printableHtml) {
       setFeedback('No advisory preview is available to download.')
       return
@@ -842,14 +877,14 @@ export default function ApprovalsPage() {
                     <button
                       type="button"
                       className={`compose-pill${advisoryPreviewMode === 'editor' ? ' is-active' : ''}`}
-                      onClick={() => setAdvisoryPreviewMode('editor')}
+                      onClick={() => switchAdvisoryPreviewMode('editor')}
                     >
                       Editor
                     </button>
                     <button
                       type="button"
                       className={`compose-pill${advisoryPreviewMode === 'email' ? ' is-active' : ''}`}
-                      onClick={() => setAdvisoryPreviewMode('email')}
+                      onClick={() => switchAdvisoryPreviewMode('email')}
                     >
                       Email Preview
                     </button>
@@ -871,9 +906,12 @@ export default function ApprovalsPage() {
                   {advisoryPreviewMode === 'editor' ? (
                     <div className="compose-editor-output approval-preview-editor-output">
                       <EmailRichEditor
+                        ref={advisoryEmailEditorRef}
                         content={advisoryEditorHtml || advisoryPreviewDocument}
                         onChange={(html) => {
                           setAdvisoryEditorHtml(html)
+                          advisoryEditorHtmlRef.current = html
+                          setAdvisoryPreviewSnapshotHtml(html)
                         }}
                       />
                       <div className="compose-editor-meta approval-preview-editor-meta">

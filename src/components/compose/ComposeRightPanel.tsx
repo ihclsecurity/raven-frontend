@@ -6,14 +6,14 @@
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Loader2, RefreshCw, Save as SaveIcon, Users } from 'lucide-react'
-import { EmailRichEditor } from './EmailRichEditor'
+import { Loader2, Users } from 'lucide-react'
 import type { Template } from '../../types/template'
 import type { GenerationPhase } from '../../pages/Compose'
 import { datasurfrApi } from '../../api/datasurfr'
 import { emailGroupsApi } from '../../api/emailGroups'
 import { approvalsApi } from '../../api/approvals'
 import { notificationsApi } from '../../api/notifications'
+import type { ApprovalRequest } from '../../types/approval'
 import type { DatasurfrMapProperty } from '../../types/datasurfr'
 import { normalizeEmailPreviewFrame } from '../../utils/emailPreviewFrame'
 import {
@@ -22,6 +22,7 @@ import {
   mapPreviewErrorHtml,
 } from '../../utils/emailPreviewImpactMap'
 import type { ImpactMapPayload } from '../../utils/renderImpactMapImage'
+import { AdvisoryRichTextEditor } from './AdvisoryRichTextEditor'
 
 interface ComposeRightPanelProps {
   advisoryRef: RefObject<HTMLElement>
@@ -36,17 +37,25 @@ interface ComposeRightPanelProps {
   generateError?: string | null
   lastGeneratedTemplateName?: string | null
   onShowToast: (message: string) => void
-  saveStatus?: 'save' | 'saving' | 'saved'
-  saveLabel?: string
-  onSave?: (overrides?: Record<string, unknown>) => Promise<void> | void
   onRefreshPreview?: (overrides?: Record<string, unknown>) => Promise<void> | void
   showTemplatePanel?: boolean
   showAdvisoryPanel?: boolean
   className?: string
 }
 
-type OutputMode = 'text' | 'editor' | 'email'
+type OutputMode = 'text' | 'email'
 const CUSTOM_EMAIL_TEMPLATE_MARKER = 'OSINT_EMAIL_TEMPLATE_CUSTOM'
+const STANDARD_EMAIL_TEMPLATE_MARKER_RE = /<!--\s*OSINT_EMAIL_TEMPLATE_V\d+\s*-->/
+
+function markEmailHtmlAsCustom(html: string): string {
+  const value = html.trim()
+  if (!value) return value
+  if (value.includes(CUSTOM_EMAIL_TEMPLATE_MARKER)) return value
+  if (STANDARD_EMAIL_TEMPLATE_MARKER_RE.test(value)) {
+    return value.replace(STANDARD_EMAIL_TEMPLATE_MARKER_RE, `<!-- ${CUSTOM_EMAIL_TEMPLATE_MARKER} -->`)
+  }
+  return `<!-- ${CUSTOM_EMAIL_TEMPLATE_MARKER} -->\n${value}`
+}
 
 type PropertyEmailSuggestion = {
   email: string
@@ -155,9 +164,6 @@ export function ComposeRightPanel({
   generateError,
   lastGeneratedTemplateName,
   onShowToast,
-  saveStatus = 'save',
-  saveLabel = 'Save draft',
-  onSave,
   onRefreshPreview,
   showTemplatePanel = true,
   showAdvisoryPanel = true,
@@ -165,8 +171,8 @@ export function ComposeRightPanel({
 }: ComposeRightPanelProps) {
   const queryClient = useQueryClient()
   const [outputMode, setOutputMode] = useState<OutputMode>('text')
-  const [editorHtml, setEditorHtml] = useState('')
-  const [editorHasUserChanges, setEditorHasUserChanges] = useState(false)
+  const [draftOutputText, setDraftOutputText] = useState<string | null>(null)
+  const [textEditorHasUserChanges, setTextEditorHasUserChanges] = useState(false)
   const [emailDestination, setEmailDestination] = useState('')
   const [selectedRecipientEmails, setSelectedRecipientEmails] = useState<string[]>([])
   const [emailGroupMenuOpen, setEmailGroupMenuOpen] = useState(false)
@@ -179,6 +185,11 @@ export function ComposeRightPanel({
   const [renderingBrowserMapPreview, setRenderingBrowserMapPreview] = useState(false)
   const [browserMapPreviewError, setBrowserMapPreviewError] = useState<string | null>(null)
   const previousAutoRecipientEmailsRef = useRef<string[]>([])
+  const textAutosaveFailureRef = useRef(false)
+  const textEditorFocusedRef = useRef(false)
+  const draftOutputTextRef = useRef('')
+  const lastPersistedOutputTextRef = useRef('')
+  const hydratedNotificationIdRef = useRef<number | null | undefined>(undefined)
   const { data: mapProperties = [] } = useQuery({
     queryKey: ['map-view-properties'],
     queryFn: () => datasurfrApi.listMapProperties(),
@@ -208,13 +219,15 @@ export function ComposeRightPanel({
 
   const activeOutputKey = (fields.final_text as string) ? 'final_text' : ((fields.edited_text as string) ? 'edited_text' : 'generated_text')
   const outputText = (fields[activeOutputKey] as string) || ''
+  const editorText = draftOutputText ?? outputText
+  const textSaveKey = (fields.final_text as string) ? 'final_text' : 'edited_text'
   const emailPreviewHtml = (fields.channel_email_text as string) || ''
   const tagsJson = (fields.tags_json as string) || ''
   const geographyJson = (fields.geography_json as string) || ''
   const emailSubject = ((fields.email_subject as string) || '').trim()
   const defaultHeading = ((fields.heading as string) || '').trim()
-  const hasOutput = Boolean(outputText.trim())
-  const wordCount = outputText.trim().split(/\s+/).filter(Boolean).length
+  const hasOutput = Boolean(editorText.trim() || outputText.trim())
+  const wordCount = editorText.trim().split(/\s+/).filter(Boolean).length
   const fallbackUsed = Boolean(fields.llm_fallback_used)
   const fallbackReason = (fields.llm_fallback_reason as string) || ''
   const requestedProvider = (fields.llm_requested_provider as string) || ''
@@ -230,26 +243,27 @@ export function ComposeRightPanel({
   })
 
   useEffect(() => {
-    setEditorHtml(emailPreviewHtml || '')
-    setEditorHasUserChanges(false)
-  }, [emailPreviewHtml])
+    const notificationChanged = hydratedNotificationIdRef.current !== notificationId
+    if (notificationChanged || !textEditorHasUserChanges) {
+      hydratedNotificationIdRef.current = notificationId
+      setDraftOutputText(outputText)
+      draftOutputTextRef.current = outputText
+      lastPersistedOutputTextRef.current = outputText
+      setTextEditorHasUserChanges(false)
+    }
+  }, [notificationId, outputText, textEditorHasUserChanges])
 
   const modeButtonClass = (mode: OutputMode) => `compose-pill${outputMode === mode ? ' is-active' : ''}`
-  const editorDirty = editorHasUserChanges
+  const editorDirty = textEditorHasUserChanges
   const emailPreviewShellHtml = emailPreviewResponse?.html || ''
-  const hasCustomEmailPreview = emailPreviewHtml.includes(CUSTOM_EMAIL_TEMPLATE_MARKER)
   const isFetchingMapPreview = isFetchingEmailPreviewShell || renderingBrowserMapPreview
   const mapPreviewHtml = resolvedEmailPreviewHtml || emailPreviewShellHtml
-  const savedEmailPreviewDocument = hasCustomEmailPreview
-    ? emailPreviewHtml
-    : (mapPreviewHtml || emailPreviewHtml || '')
-  const emailPreviewDocument = editorDirty
-    ? (editorHtml || savedEmailPreviewDocument || '')
-    : (savedEmailPreviewDocument || editorHtml || '')
+  const savedEmailPreviewDocument = mapPreviewHtml || emailPreviewShellHtml || emailPreviewHtml || ''
+  const emailPreviewDocument = savedEmailPreviewDocument || ''
+  const liveEmailPreviewDocument = emailPreviewDocument
   const liveMapPreviewUnavailable =
     outputMode === 'email'
     && !editorDirty
-    && !hasCustomEmailPreview
     && (renderingBrowserMapPreview || Boolean(browserMapPreviewError))
   const shouldRenderAdvisoryPanel = showAdvisoryPanel && hasOutput
   const panelClassName = ['compose-generation-stack', 'compose-generation-layout', className].filter(Boolean).join(' ')
@@ -258,6 +272,26 @@ export function ComposeRightPanel({
   const menuBorder = isLightTheme ? '#cbd5e1' : '#334155'
   const rowDefaultBg = isLightTheme ? '#f3f4f6' : '#1f2937'
   const rowDefaultText = isLightTheme ? '#111827' : '#e5e7eb'
+
+  const updateEditorText = (nextText: string) => {
+    setDraftOutputText(nextText)
+    draftOutputTextRef.current = nextText
+    setTextEditorHasUserChanges(nextText !== lastPersistedOutputTextRef.current)
+    textAutosaveFailureRef.current = false
+  }
+
+  const switchOutputMode = async (mode: OutputMode) => {
+    if (mode === 'email' && textEditorHasUserChanges) {
+      const saved = await persistTextEditorChanges()
+      if (!saved) {
+        return
+      }
+    } else if (mode === 'email' && notificationId) {
+      await queryClient.invalidateQueries({ queryKey: ['notification-email-preview', notificationId] })
+    }
+    setOutputMode(mode)
+  }
+
   const selectedGroupNames = useMemo(
     () => emailGroups.filter((group) => selectedGroupIds.includes(group.id)).map((group) => group.name),
     [emailGroups, selectedGroupIds],
@@ -342,17 +376,8 @@ export function ComposeRightPanel({
   }, [impactedRecipientEmailSignature, impactedRecipientEmails])
 
   useEffect(() => {
-    if (editorDirty || hasCustomEmailPreview || !mapPreviewHtml) {
-      return
-    }
-    setEditorHtml(mapPreviewHtml)
-  }, [editorDirty, hasCustomEmailPreview, mapPreviewHtml])
-
-  useEffect(() => {
     if (
-      editorDirty
-      || hasCustomEmailPreview
-      || !emailPreviewShellHtml
+      !emailPreviewShellHtml
       || !notificationId
     ) {
       setRenderingBrowserMapPreview(false)
@@ -395,85 +420,106 @@ export function ComposeRightPanel({
     return () => {
       cancelled = true
     }
-  }, [editorDirty, emailPreviewShellHtml, geographyJson, hasCustomEmailPreview, notificationId, outputText, tagsJson])
+  }, [emailPreviewShellHtml, geographyJson, notificationId, outputText, tagsJson])
 
-  const handleSaveAndRefreshPreview = async () => {
-    if (!onRefreshPreview) {
-      onShowToast('Preview refresh is not available for this draft')
-      return
+  const persistTextEditorChanges = async (textOverride?: string): Promise<boolean> => {
+    if (!notificationId && !onRefreshPreview) {
+      return false
     }
-    const overrides: Record<string, unknown> = {}
-    if (outputMode === 'editor') {
-      if (isFetchingEmailPreviewShell || renderingBrowserMapPreview) {
-        onShowToast('Wait for the live map snapshot to finish before saving editor changes')
-        return
-      }
-      if (browserMapPreviewError) {
-        onShowToast('Live map snapshot failed; fix the map preview before saving editor changes')
-        return
-      }
-      const htmlToSave = (editorHtml || mapPreviewHtml || emailPreviewDocument).trim()
-      overrides.channel_email_text = htmlToSave
-      onChange('channel_email_text', htmlToSave)
-    } else if (outputMode === 'text') {
-      overrides[activeOutputKey] = outputText
-    }
+    const textToSave = textOverride ?? draftOutputTextRef.current ?? editorText
+    const overrides = { [textSaveKey]: textToSave }
     try {
       setSavingOutputChanges(true)
-      await onRefreshPreview(overrides)
-      if (outputMode === 'editor') {
-        setEditorHasUserChanges(false)
+      if (notificationId) {
+        const updated = await notificationsApi.update(notificationId, overrides)
+        onChange(textSaveKey, (updated as unknown as Record<string, unknown>)[textSaveKey] ?? textToSave)
+        queryClient.setQueryData(['notification', notificationId], updated)
+      } else if (onRefreshPreview) {
+        await onRefreshPreview(overrides)
       }
+      lastPersistedOutputTextRef.current = textToSave
+      if (draftOutputTextRef.current === textToSave) {
+        setTextEditorHasUserChanges(false)
+      }
+      textAutosaveFailureRef.current = false
       if (notificationId) {
         await queryClient.invalidateQueries({ queryKey: ['notification-email-preview', notificationId] })
       }
-      onShowToast(outputMode === 'editor' ? 'Email editor changes applied' : 'Content applied and email preview refreshed')
-      if (outputMode === 'text') {
-        setOutputMode('email')
-      }
+      return true
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not save changes'
-      onShowToast(message)
+      if (!textAutosaveFailureRef.current) {
+        const message = error instanceof Error ? error.message : 'Could not auto-save advisory text'
+        onShowToast(message)
+        textAutosaveFailureRef.current = true
+      }
+      return false
     } finally {
       setSavingOutputChanges(false)
     }
   }
+
+  useEffect(() => {
+    if (!textEditorHasUserChanges || (!notificationId && !onRefreshPreview)) return
+    const timeout = window.setTimeout(() => {
+      void persistTextEditorChanges()
+    }, 350)
+    return () => window.clearTimeout(timeout)
+  }, [draftOutputText, notificationId, onRefreshPreview, textEditorHasUserChanges, textSaveKey])
 
   if (!showTemplatePanel && !shouldRenderAdvisoryPanel) {
     return null
   }
 
-  const ensureCurrentEmailSavedForApproval = async (): Promise<boolean> => {
-    if (!editorDirty) return true
-    if (!onRefreshPreview) {
-      return true
+  const resolvePreviewHtmlWithBrowserMap = async (html: string): Promise<string> => {
+    if (!notificationId || !html.includes(IMPACT_MAP_PLACEHOLDER)) {
+      return html
     }
-    if (isFetchingEmailPreviewShell || renderingBrowserMapPreview) {
-      onShowToast('Wait for the live map snapshot to finish before requesting approval')
-      return false
-    }
-    if (browserMapPreviewError) {
-      onShowToast('Live map snapshot failed; fix the map preview before requesting approval')
-      return false
-    }
-    const htmlToSave = (editorHtml || mapPreviewHtml || emailPreviewDocument).trim()
-    if (!htmlToSave) return true
     try {
-      setSavingOutputChanges(true)
-      onChange('channel_email_text', htmlToSave)
-      await onRefreshPreview({ channel_email_text: htmlToSave })
-      setEditorHasUserChanges(false)
-      if (notificationId) {
-        void queryClient.invalidateQueries({ queryKey: ['notification-email-preview', notificationId] })
-      }
-      return true
+      const payload = (await notificationsApi.getImpactMapPayload(notificationId)) as ImpactMapPayload
+      return await injectBrowserImpactMapIntoEmailHtml(html, payload)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not save email editor changes'
-      setEmailSendFeedback(message)
-      onShowToast(message)
-      return false
-    } finally {
-      setSavingOutputChanges(false)
+      const message = error instanceof Error ? error.message : 'Unknown map rendering error.'
+      return html.replace(IMPACT_MAP_PLACEHOLDER, mapPreviewErrorHtml(message))
+    }
+  }
+
+  const getCurrentRenderedPreviewHtml = async (): Promise<string> => {
+    if (textEditorHasUserChanges) {
+      const saved = await persistTextEditorChanges()
+      if (!saved) {
+        throw new Error('Could not save latest advisory text before preparing preview.')
+      }
+    }
+
+    if (notificationId) {
+      const preview = await notificationsApi.getEmailPreview(notificationId, false)
+      const previewHtml = String(preview.html || '').trim()
+      if (previewHtml) {
+        return resolvePreviewHtmlWithBrowserMap(previewHtml)
+      }
+    }
+
+    return resolvePreviewHtmlWithBrowserMap((liveEmailPreviewDocument || emailPreviewDocument || '').trim())
+  }
+
+  const ensureCurrentEmailSavedForApproval = async (): Promise<string | null> => {
+    try {
+      const latestHtml = await getCurrentRenderedPreviewHtml()
+      return latestHtml ? markEmailHtmlAsCustom(latestHtml) : latestHtml
+    } catch {
+      setEmailSendFeedback('Could not save latest advisory text before requesting approval.')
+      return null
+    }
+  }
+
+  const ensureApprovalReceivedCurrentHtml = async (
+    createdApproval: ApprovalRequest,
+    expectedHtml: string,
+  ): Promise<void> => {
+    const approvalForCheck = createdApproval.html_body ? createdApproval : await approvalsApi.get(createdApproval.id)
+    const savedHtml = String(approvalForCheck.html_body || '').trim()
+    if (savedHtml !== expectedHtml.trim()) {
+      throw new Error('Approval preview did not save the latest Compose edits. Please try again.')
     }
   }
 
@@ -504,18 +550,22 @@ export function ComposeRightPanel({
     setSendingEmail(true)
     setEmailSendFeedback(null)
     try {
-      const savedForApproval = await ensureCurrentEmailSavedForApproval()
-      if (!savedForApproval) return
-      await approvalsApi.create({
+      const savedHtmlForApproval = await ensureCurrentEmailSavedForApproval()
+      if (!savedHtmlForApproval) return
+      const approvalHtmlBody = markEmailHtmlAsCustom(savedHtmlForApproval)
+      const approvalMessageText = editorText
+      const createdApproval = await approvalsApi.create({
         notification_id: notificationId,
         item_type: 'advisory',
         approver_user_id: Number(selectedApproverUserId),
         title: defaultHeading || emailSubject || `Advisory #${notificationId}`,
         subject: emailSubject || defaultHeading || undefined,
-        message_text: outputText,
+        message_text: approvalMessageText,
+        html_body: approvalHtmlBody || undefined,
         recipient_emails: destinations,
         recipient_group_ids: [],
       })
+      await ensureApprovalReceivedCurrentHtml(createdApproval, approvalHtmlBody)
       setEmailSendFeedback(`Approval request sent to ${destinations.length} recipient(s)`)
       onShowToast('Sent for approval')
     } catch (error) {
@@ -563,18 +613,22 @@ export function ComposeRightPanel({
     setEmailSendFeedback(null)
     setEmailGroupMenuOpen(false)
     try {
-      const savedForApproval = await ensureCurrentEmailSavedForApproval()
-      if (!savedForApproval) return
-      await approvalsApi.create({
+      const savedHtmlForApproval = await ensureCurrentEmailSavedForApproval()
+      if (!savedHtmlForApproval) return
+      const approvalHtmlBody = markEmailHtmlAsCustom(savedHtmlForApproval)
+      const approvalMessageText = editorText
+      const createdApproval = await approvalsApi.create({
         notification_id: notificationId,
         item_type: 'advisory',
         approver_user_id: Number(selectedApproverUserId),
         title: defaultHeading || emailSubject || `Advisory #${notificationId}`,
         subject: emailSubject || defaultHeading || undefined,
-        message_text: outputText,
+        message_text: approvalMessageText,
+        html_body: approvalHtmlBody || undefined,
         recipient_emails: [],
         recipient_group_ids: groupIds,
       })
+      await ensureApprovalReceivedCurrentHtml(createdApproval, approvalHtmlBody)
       setEmailSendFeedback(`Approval request sent to ${selectedGroups.length} group(s) (${destinations.length} recipients)`)
       onShowToast('Sent for approval')
     } catch (error) {
@@ -585,8 +639,15 @@ export function ComposeRightPanel({
     }
   }
 
-  const handleDownloadPdf = () => {
-    const printableHtml = (editorDirty ? editorHtml : emailPreviewDocument).trim()
+  const handleDownloadPdf = async () => {
+    let printableHtml = ''
+    try {
+      printableHtml = await getCurrentRenderedPreviewHtml()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to prepare PDF preview'
+      onShowToast(message)
+      return
+    }
     if (!printableHtml) {
       onShowToast('Generate content first')
       return
@@ -728,28 +789,11 @@ export function ComposeRightPanel({
           <div className="compose-panel-heading">
             <div>
               <h2>Generated Advisory</h2>
-              <p className="compose-panel-copy">Review, edit, copy, download, or send the generated advisory.</p>
+              <p className="compose-panel-copy">Edit the advisory text and review the live email preview before downloading or sending.</p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <div className="compose-word-count">{wordCount} words</div>
-              {onSave ? (
-                <button
-                  type="button"
-                  className={`btn-secondary compose-header-save-button${saveStatus === 'saved' ? ' is-saved' : ''}${saveStatus === 'saving' ? ' is-saving' : ''}`}
-                  disabled={saveStatus === 'saving'}
-                  onClick={() => { void onSave() }}
-                  aria-label={saveLabel}
-                  title={saveLabel}
-                >
-                  {saveStatus === 'saving' ? (
-                    <Loader2 size={16} className="compose-header-save-spinner" aria-hidden="true" />
-                  ) : saveStatus === 'saved' ? (
-                    <Check size={16} aria-hidden="true" />
-                  ) : (
-                    <SaveIcon size={16} aria-hidden="true" />
-                  )}
-                </button>
-              ) : null}
+              {savingOutputChanges ? <span className="compose-autosave-status"><Loader2 size={14} className="spin" /> Saving</span> : null}
             </div>
           </div>
 
@@ -769,33 +813,25 @@ export function ComposeRightPanel({
           </label>
 
           <div className="compose-pill-tabs">
-            <button type="button" className={modeButtonClass('text')} onClick={() => setOutputMode('text')}>
-              Text
+            <button type="button" className={modeButtonClass('text')} onClick={() => { void switchOutputMode('text') }}>
+              Text Editor
             </button>
-            <button type="button" className={modeButtonClass('editor')} onClick={() => setOutputMode('editor')}>
-              Editor
-            </button>
-            <button type="button" className={modeButtonClass('email')} onClick={() => setOutputMode('email')}>
+            <button type="button" className={modeButtonClass('email')} onClick={() => { void switchOutputMode('email') }}>
               Email Preview
             </button>
-            <button type="button" className="compose-pill" onClick={handleDownloadPdf}>
+            <button type="button" className="compose-pill" onClick={() => { void handleDownloadPdf() }}>
               Download PDF
-            </button>
-            <button
-              type="button"
-              className="compose-pill compose-pill-icon"
-              onClick={() => { void handleSaveAndRefreshPreview() }}
-              disabled={!onRefreshPreview || saveStatus === 'saving' || savingOutputChanges}
-              title={outputMode === 'editor' ? 'Apply email editor changes' : 'Apply content and refresh email preview'}
-              aria-label={outputMode === 'editor' ? 'Apply email editor changes' : 'Apply content and refresh email preview'}
-            >
-              {saveStatus === 'saving' || savingOutputChanges ? <Loader2 size={14} className="spin" /> : outputMode === 'editor' ? <SaveIcon size={14} /> : <RefreshCw size={14} />}
             </button>
           </div>
 
           {outputMode === 'email' ? (
             <div className="compose-canvas-shell">
               <div className="compose-canvas compose-canvas-preview">
+                {editorDirty ? (
+                  <div className="compose-meta-note" style={{ padding: '10px 12px' }}>
+                    Saving latest text before refreshing preview...
+                  </div>
+                ) : null}
                 {isFetchingMapPreview && !editorDirty ? (
                   <div className="compose-meta-note" style={{ padding: '10px 12px' }}>
                   {isFetchingEmailPreviewShell ? 'Loading email preview...' : 'Preparing affected property list...'}
@@ -808,7 +844,7 @@ export function ComposeRightPanel({
                 ) : null}
                 <iframe
                   title="Email preview"
-                  srcDoc={emailPreviewDocument || '<div style="padding:24px;font-family:Arial,sans-serif;">Generate and save to refresh the branded preview.</div>'}
+                  srcDoc={liveEmailPreviewDocument || '<div style="padding:24px;font-family:Arial,sans-serif;">Generate and save to refresh the branded preview.</div>'}
                   className="compose-email-iframe"
                   sandbox=""
                   referrerPolicy="no-referrer"
@@ -816,28 +852,24 @@ export function ComposeRightPanel({
                 />
               </div>
             </div>
-          ) : outputMode === 'editor' ? (
-            <div className="compose-editor-output">
-              <EmailRichEditor
-                content={editorHtml || mapPreviewHtml || emailPreviewHtml}
-                onChange={(html) => {
-                  setEditorHtml(html)
-                  setEditorHasUserChanges(true)
-                }}
-              />
-              <div className="compose-editor-meta">
-                <span>Edit the branded email directly here.</span>
-                <span>{editorDirty ? 'Unsaved email editor changes' : 'Editor synced with saved email layout'}</span>
-              </div>
-            </div>
           ) : (
             <div className="compose-canvas-shell">
-              <textarea
-                className="compose-text-output"
-                value={outputText}
-                onChange={(e) => onChange(activeOutputKey, e.target.value)}
-                rows={14}
-                placeholder="Generated advisory text will appear here..."
+              <div className="compose-meta-note" style={{ marginBottom: 10 }}>
+                Edit the advisory in a clean document editor. The email template below remains read-only and updates from this text.
+              </div>
+              <AdvisoryRichTextEditor
+                value={editorText}
+                onChange={updateEditorText}
+                saving={savingOutputChanges}
+                onFocus={() => {
+                  textEditorFocusedRef.current = true
+                }}
+                onBlur={() => {
+                  textEditorFocusedRef.current = false
+                  if (textEditorHasUserChanges) {
+                    void persistTextEditorChanges()
+                  }
+                }}
               />
             </div>
           )}

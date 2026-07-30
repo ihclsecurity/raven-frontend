@@ -113,6 +113,8 @@ export interface NotificationCreate {
   source_text?: string
   custom_instructions?: string
   generated_text?: string
+  edited_text?: string
+  final_text?: string
   channel_email_text?: string
 }
 
