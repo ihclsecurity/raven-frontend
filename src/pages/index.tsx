@@ -56,7 +56,7 @@ export default function NotFoundPage() {
               border: '1px solid rgba(118, 157, 228, 0.2)',
             }}
           >
-            <img src="/raven_mark.svg" alt="Raven mark" style={{ width: 28, height: 28 }} />
+            <img src="/Raven_main_logo_dark_.png" alt="Raven" style={{ width: 94, height: 'auto' }} />
             <span
               style={{
                 fontSize: '0.95rem',

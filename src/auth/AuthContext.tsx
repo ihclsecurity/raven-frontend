@@ -28,6 +28,7 @@ import { authApi } from '../api/auth'
 import type { RavenApiError } from '../api/client'
 import type { AuthUser, LoginOtpRequiredResponse, LoginResponse, PasswordLoginResponse } from '../types/auth'
 import { useCookies } from 'react-cookie'
+import { getStoredRavenLogoPath } from '../constants/branding'
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'
 type LoginStepResult = 'authenticated' | 'otp_required'
@@ -317,12 +318,13 @@ export function useAuth() {
 // the product without exposing any real data before authentication.
 
 function LockedApplicationPreview() {
+  const ravenLogoPath = getStoredRavenLogoPath()
+
   return (
     <div className="auth-preview-shell" aria-hidden="true">
       <aside className="auth-preview-sidebar">
         <div className="auth-preview-brand">
-          <img src="/raven_mark.svg" alt="" />
-          <span>Raven</span>
+          <img src={ravenLogoPath} alt="" />
         </div>
         <div className="auth-preview-nav">
           <span />
@@ -352,6 +354,22 @@ function LockedApplicationPreview() {
   )
 }
 
+function AuthSessionLoading() {
+  const ravenLogoPath = getStoredRavenLogoPath()
+
+  return (
+    <div className="auth-session-loading" role="status" aria-live="polite">
+      <div className="auth-session-loading-card">
+        <img className="auth-session-loading-logo" src={ravenLogoPath} alt="" aria-hidden="true" />
+        <div>
+          <strong>Raven</strong>
+          <span>Verifying secure session...</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ============================================================================
 // Login overlay
 // ============================================================================
@@ -361,6 +379,7 @@ function LockedApplicationPreview() {
 function LoginOverlay() {
   const { cancelOtp, login, otpChallenge, resendOtp, verifyOtp } = useAuth()
   const navigate = useNavigate()
+  const ravenLogoPath = getStoredRavenLogoPath()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [otp, setOtp] = useState('')
@@ -513,11 +532,8 @@ function LoginOverlay() {
       <form className={`auth-login-card${otpChallenge ? ' auth-login-card--otp' : ''}`} onSubmit={handleSubmit}>
         <div className="auth-login-brand-row">
           <div className="auth-login-brand-lockup">
-            <span className="auth-login-mark">
-              <img src="/raven_mark.svg" alt="" />
-            </span>
+            <img className="auth-login-logo" src={ravenLogoPath} alt="Raven" />
             <div>
-              <strong>Raven</strong>
               <span>IHCL Security Intelligence</span>
             </div>
           </div>
@@ -643,7 +659,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (status === 'loading') {
-    return null
+    return <AuthSessionLoading />
   }
 
   return (

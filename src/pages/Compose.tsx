@@ -387,10 +387,15 @@ export default function ComposePage() {
     if (!notificationId) {
       return
     }
-    void notificationsApi.update(notificationId, { tags_json: nextTagsJson }).then(() => {
+    void notificationsApi.update(notificationId, { tags_json: nextTagsJson }).then((updated) => {
+      syncNotification(updated as unknown as Record<string, unknown> & { id: number })
       queryClient.setQueryData(['notification', notificationId], (current: unknown) => {
         if (current && typeof current === 'object') {
-          return { ...(current as Record<string, unknown>), tags_json: nextTagsJson }
+          return {
+            ...(current as Record<string, unknown>),
+            ...(updated as unknown as Record<string, unknown>),
+            tags_json: nextTagsJson,
+          }
         }
         return current
       })
@@ -770,9 +775,6 @@ export default function ComposePage() {
               generateError={generateError}
               lastGeneratedTemplateName={lastGeneratedTemplateName}
               onShowToast={showToast}
-              saveStatus={headerSaveStatus}
-              saveLabel={headerSaveLabel}
-              onSave={(overrides) => handleHeaderSaveRef.current(overrides)}
               onRefreshPreview={handlePreviewRefresh}
               showAdvisoryPanel={false}
               className="compose-generation-stack--compact"
@@ -795,9 +797,6 @@ export default function ComposePage() {
           generateError={generateError}
           lastGeneratedTemplateName={lastGeneratedTemplateName}
           onShowToast={showToast}
-          saveStatus={headerSaveStatus}
-          saveLabel={headerSaveLabel}
-          onSave={(overrides) => handleHeaderSaveRef.current(overrides)}
           onRefreshPreview={handlePreviewRefresh}
           showTemplatePanel={false}
         />
