@@ -120,6 +120,16 @@ function propertyEmailSuggestions(property: DatasurfrMapProperty): PropertyEmail
   return suggestions
 }
 
+function regionalHeadEmailSuggestions(property: DatasurfrMapProperty): PropertyEmailSuggestion[] {
+  const region = String(property.region || '').trim()
+  const headName = String(property.regional_head_name || '').trim()
+  const label = ['Regional Head', region, headName].filter(Boolean).join(' - ')
+  return splitEmails(property.regional_head_email).map((email) => ({
+    email,
+    label: label || 'Regional Head',
+  }))
+}
+
 function pointEmailSuggestions(point: Record<string, unknown>): PropertyEmailSuggestion[] {
   const propertyName = String(point.name || point.property_name || '').trim()
   const suggestions: PropertyEmailSuggestion[] = []
@@ -310,7 +320,10 @@ export function ComposeRightPanel({
     return byName
   }, [mapProperties])
   const allPropertyEmailSuggestions = useMemo(
-    () => uniqueEmailSuggestions(mapProperties.flatMap((property) => propertyEmailSuggestions(property))),
+    () => uniqueEmailSuggestions(mapProperties.flatMap((property) => [
+      ...propertyEmailSuggestions(property),
+      ...regionalHeadEmailSuggestions(property),
+    ])),
     [mapProperties],
   )
   const impactedPropertyNames = useMemo(() => {
@@ -329,11 +342,12 @@ export function ComposeRightPanel({
           .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
           .flatMap((point) => pointEmailSuggestions(point))
       : []
-    const fromNames = impactedPropertyNames
+    const impactedProperties = impactedPropertyNames
       .map((name) => mapPropertyByName.get(normalizePropertyName(name)))
       .filter((property): property is DatasurfrMapProperty => Boolean(property))
-      .flatMap((property) => propertyEmailSuggestions(property))
-    return uniqueEmailSuggestions([...fromPoints, ...fromNames])
+    const fromNames = impactedProperties.flatMap((property) => propertyEmailSuggestions(property))
+    const fromRegionalHeads = impactedProperties.flatMap((property) => regionalHeadEmailSuggestions(property))
+    return uniqueEmailSuggestions([...fromPoints, ...fromNames, ...fromRegionalHeads])
   }, [impactedPropertyNames, mapPropertyByName, parsedTags])
   const impactedRecipientEmails = useMemo(
     () => uniqueEmails(impactedPropertyEmailSuggestions.map((item) => item.email)),

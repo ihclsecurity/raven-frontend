@@ -81,6 +81,8 @@ export interface DatasurfrMapProperty {
   gm_name?: string | null
   sm_email?: string | null
   sm_name?: string | null
+  regional_head_email?: string | null
+  regional_head_name?: string | null
   latitude: number
   longitude: number
 }
