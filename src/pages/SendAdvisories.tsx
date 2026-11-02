@@ -43,7 +43,7 @@ import {
   mapPreviewErrorHtml,
 } from '../utils/emailPreviewImpactMap'
 import { normalizeEmailPreviewFrame } from '../utils/emailPreviewFrame'
-import { CORPORATE_SS_GROUP_NAME, findCorporateSsGroup, hasCorporateSsRecipients } from '../utils/advisoryRecipients'
+import { CORPORATE_SS_GROUP_NAME, CORPORATE_SS_DATABASE_GROUP_NAME, findCorporateSsGroup } from '../utils/advisoryRecipients'
 import type { ImpactMapPayload } from '../utils/renderImpactMapImage'
 
 const DAILY_BUSINESS_INSIGHTS = 'daily business insights'
@@ -179,12 +179,11 @@ export default function SendAdvisoriesPage() {
     refetchOnMount: false,
     refetchOnWindowFocus: false,
   })
-  const { data: emailGroups = [], isPending: loadingRecipientGroup } = useQuery({
-    queryKey: ['email-groups-send-advisories'],
+  const { data: emailGroups = [] } = useQuery({
+    queryKey: ['email-groups', 'send-advisories', true],
     queryFn: () => emailGroupsApi.list(true),
   })
   const corporateSsGroup = findCorporateSsGroup(emailGroups)
-  const corporateSsGroupReady = hasCorporateSsRecipients(corporateSsGroup)
   const selectableEmailGroups = emailGroups.filter((group) => group.id !== corporateSsGroup?.id)
   const { data: superadmins = [] } = useQuery({
     queryKey: ['approval-superadmins-send-advisories'],
@@ -329,10 +328,6 @@ export default function SendAdvisoriesPage() {
       setFeedback('Select the superadmin approver before sending this advisory for approval.')
       return
     }
-    if (!corporateSsGroup || !corporateSsGroupReady) {
-      setFeedback('Corporate S&S must have active email recipients before requesting approval.')
-      return
-    }
     const messageText = buildWorkingText(item)
     if (!messageText) {
       setFeedback('No advisory text found to send for this item.')
@@ -352,7 +347,8 @@ export default function SendAdvisoriesPage() {
         message_text: messageText,
         html_body: previewEmailHtml.trim() || undefined,
         recipient_emails: destination ? [destination] : [],
-        recipient_group_ids: [...new Set([...selectedGroupIds, corporateSsGroup.id])],
+        // The backend adds and validates mandatory Corporate S&S recipients.
+        recipient_group_ids: selectedGroupIds,
       })
       setDismissedAdvisoryIds((prev) => (prev.includes(item.id) ? prev : [...prev, item.id]))
       void queryClient.invalidateQueries({ queryKey: ['send-advisories-notifications'] })
@@ -432,13 +428,8 @@ export default function SendAdvisoriesPage() {
         ? <div className="compose-meta-note">{advisoryGenerationState.lastMessage}</div>
         : null}
       <div className="compose-meta-note" aria-label="Mandatory advisory recipient group">
-        <strong>{CORPORATE_SS_GROUP_NAME}</strong> is always included in addition to your selected recipients.
+        <strong>{CORPORATE_SS_GROUP_NAME}</strong> ({CORPORATE_SS_DATABASE_GROUP_NAME}) is always included in addition to your selected recipients.
       </div>
-      {!corporateSsGroupReady ? (
-        <div className="compose-email-feedback is-error" role="status">
-          {loadingRecipientGroup ? 'Loading Corporate S&S...' : 'Corporate S&S must have active email recipients before sending.'}
-        </div>
-      ) : null}
       {feedback ? <div className="compose-meta-note">{feedback}</div> : null}
 
       <table className="saved-table">
@@ -542,7 +533,7 @@ export default function SendAdvisoriesPage() {
                     type="button"
                     className="btn-primary send-advisories-send-btn"
                     onClick={() => { void handleApprove(item) }}
-                    disabled={sendingId === item.id || deletingId === item.id || !corporateSsGroupReady}
+                    disabled={sendingId === item.id || deletingId === item.id}
                     title="Send for approval"
                     aria-label={sendingId === item.id ? 'Sending advisory for approval' : 'Send advisory for approval'}
                   >

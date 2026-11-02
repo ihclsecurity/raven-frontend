@@ -16,7 +16,7 @@ import { notificationsApi } from '../../api/notifications'
 import type { ApprovalRequest } from '../../types/approval'
 import type { DatasurfrMapProperty } from '../../types/datasurfr'
 import { normalizeEmailPreviewFrame } from '../../utils/emailPreviewFrame'
-import { CORPORATE_SS_GROUP_NAME, findCorporateSsGroup, hasCorporateSsRecipients } from '../../utils/advisoryRecipients'
+import { CORPORATE_SS_GROUP_NAME, CORPORATE_SS_DATABASE_GROUP_NAME, findCorporateSsGroup } from '../../utils/advisoryRecipients'
 import {
   IMPACT_MAP_PLACEHOLDER,
   injectBrowserImpactMapIntoEmailHtml,
@@ -206,12 +206,11 @@ export function ComposeRightPanel({
     queryFn: () => datasurfrApi.listMapProperties(),
     staleTime: 5 * 60 * 1000,
   })
-  const { data: emailGroups = [], isPending: loadingRecipientGroup } = useQuery({
-    queryKey: ['email-groups-compose'],
+  const { data: emailGroups = [] } = useQuery({
+    queryKey: ['email-groups', 'compose', true],
     queryFn: () => emailGroupsApi.list(true),
   })
   const corporateSsGroup = findCorporateSsGroup(emailGroups)
-  const corporateSsGroupReady = hasCorporateSsRecipients(corporateSsGroup)
   const selectableEmailGroups = emailGroups.filter((group) => group.id !== corporateSsGroup?.id)
   const { data: superadmins = [] } = useQuery({
     queryKey: ['approval-superadmins-compose'],
@@ -542,10 +541,6 @@ export function ComposeRightPanel({
   }
 
   const handleSendEmail = async () => {
-    if (!corporateSsGroup || !corporateSsGroupReady) {
-      setEmailSendFeedback('Corporate S&S must have active email recipients before requesting approval.')
-      return
-    }
     if (selectedGroupIds.length > 0) {
       await sendToEmailGroups(selectedGroupIds)
       return
@@ -581,7 +576,8 @@ export function ComposeRightPanel({
         message_text: approvalMessageText,
         html_body: approvalHtmlBody || undefined,
         recipient_emails: destinations,
-        recipient_group_ids: [corporateSsGroup.id],
+        // The backend adds and validates mandatory Corporate S&S recipients.
+        recipient_group_ids: [],
       })
       await ensureApprovalReceivedCurrentHtml(createdApproval, approvalHtmlBody)
       setEmailSendFeedback('Approval request sent. Corporate S&S is included automatically.')
@@ -595,10 +591,6 @@ export function ComposeRightPanel({
   }
 
   const sendToEmailGroups = async (groupIds: number[]) => {
-    if (!corporateSsGroup || !corporateSsGroupReady) {
-      setEmailSendFeedback('Corporate S&S must have active email recipients before requesting approval.')
-      return
-    }
     const selectedGroups = emailGroups.filter((item) => groupIds.includes(item.id))
     if (!selectedGroups.length) return
     if (!notificationId) {
@@ -648,7 +640,7 @@ export function ComposeRightPanel({
         message_text: approvalMessageText,
         html_body: approvalHtmlBody || undefined,
         recipient_emails: [],
-        recipient_group_ids: [...new Set([...groupIds, corporateSsGroup.id])],
+        recipient_group_ids: groupIds,
       })
       await ensureApprovalReceivedCurrentHtml(createdApproval, approvalHtmlBody)
       setEmailSendFeedback('Approval request sent to the selected groups and Corporate S&S.')
@@ -1032,7 +1024,7 @@ export function ComposeRightPanel({
                     type="button"
                     className="btn-primary compose-email-approval-button"
                     onClick={() => void handleSendEmail()}
-                    disabled={sendingEmail || !notificationId || !corporateSsGroupReady || liveMapPreviewUnavailable}
+                    disabled={sendingEmail || !notificationId || liveMapPreviewUnavailable}
                   >
                     {sendingEmail ? 'Requesting...' : 'Send for Approval'}
                   </button>
@@ -1042,13 +1034,8 @@ export function ComposeRightPanel({
                 Sends the current preview and selected recipients to a superadmin for approval.
               </div>
       <div className="compose-meta-note" aria-label="Mandatory advisory recipient group">
-        <strong>{CORPORATE_SS_GROUP_NAME}</strong> is always included in addition to your selected recipients.
+        <strong>{CORPORATE_SS_GROUP_NAME}</strong> ({CORPORATE_SS_DATABASE_GROUP_NAME}) is always included in addition to your selected recipients.
       </div>
-      {!corporateSsGroupReady ? (
-        <div className="compose-email-feedback is-error" role="status">
-          {loadingRecipientGroup ? 'Loading Corporate S&S...' : 'Corporate S&S must have active email recipients before sending.'}
-        </div>
-      ) : null}
               {selectedGroupNames.length > 0 ? (
                 <div className="compose-meta-note">Selected groups: {selectedGroupNames.join(', ')}</div>
               ) : null}

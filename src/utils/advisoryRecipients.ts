@@ -1,11 +1,12 @@
 import type { EmailGroup } from '../types/emailGroups'
 
 export const CORPORATE_SS_GROUP_NAME = 'Corporate S&S'
+export const CORPORATE_SS_DATABASE_GROUP_NAME = 'S&S Leadership'
 
-// Resolve the configured group rather than depending on an environment-specific ID.
+// Corporate S&S uses the existing S&S Leadership group in the database.
 export function findCorporateSsGroup(groups: EmailGroup[]): EmailGroup | null {
   const matches = groups.filter((group) => (
-    group.active && group.name.trim().replace(/\s+/g, ' ').toLowerCase() === 'corporate s&s'
+    group.active && group.name.trim().replace(/\s+/g, ' ').toLowerCase() === CORPORATE_SS_DATABASE_GROUP_NAME.toLowerCase()
   ))
   return matches.length === 1 ? matches[0] : null
 }
