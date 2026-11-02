@@ -4,7 +4,7 @@
  * What this page does
  * -------------------
  * This page is the operational console for reviewing generated advisories,
- * choosing approvers, and dispatching the final output to Corporate S&S.
+ * assigning recipients, choosing approvers, and dispatching the final output.
  *
  * How a new developer should read this file
  * -----------------------------------------
@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Eye, Loader2, Pencil, RefreshCw, Send, Trash2, X } from 'lucide-react'
+import { Eye, Loader2, Pencil, RefreshCw, Send, Trash2, Users, X } from 'lucide-react'
 import { notificationsApi } from '../api/notifications'
 import { datasurfrApi } from '../api/datasurfr'
 import { emailGroupsApi } from '../api/emailGroups'
@@ -43,8 +43,8 @@ import {
   mapPreviewErrorHtml,
 } from '../utils/emailPreviewImpactMap'
 import { normalizeEmailPreviewFrame } from '../utils/emailPreviewFrame'
-import type { ImpactMapPayload } from '../utils/renderImpactMapImage'
 import { CORPORATE_SS_GROUP_NAME, findCorporateSsGroup, hasCorporateSsRecipients } from '../utils/advisoryRecipients'
+import type { ImpactMapPayload } from '../utils/renderImpactMapImage'
 
 const DAILY_BUSINESS_INSIGHTS = 'daily business insights'
 const DAILY_NEWS_SUMMARY = 'daily news summary'
@@ -134,6 +134,10 @@ export default function SendAdvisoriesPage() {
     runBackgroundAdvisoryGeneration: () => Promise<void>
     regenerateAllAdvisories: () => Promise<void>
   }>()
+  const [recipientById, setRecipientById] = useState<Record<number, string>>({})
+  const [selectedGroupIdsById, setSelectedGroupIdsById] = useState<Record<number, number[]>>({})
+  const [groupMenuForId, setGroupMenuForId] = useState<number | null>(null)
+  const [activeRecipientInputId, setActiveRecipientInputId] = useState<number | null>(null)
   const [sendingId, setSendingId] = useState<number | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [dismissedAdvisoryIds, setDismissedAdvisoryIds] = useState<number[]>([])
@@ -181,6 +185,7 @@ export default function SendAdvisoriesPage() {
   })
   const corporateSsGroup = findCorporateSsGroup(emailGroups)
   const corporateSsGroupReady = hasCorporateSsRecipients(corporateSsGroup)
+  const selectableEmailGroups = emailGroups.filter((group) => group.id !== corporateSsGroup?.id)
   const { data: superadmins = [] } = useQuery({
     queryKey: ['approval-superadmins-send-advisories'],
     queryFn: approvalsApi.listSuperadmins,
@@ -193,6 +198,12 @@ export default function SendAdvisoriesPage() {
   const priorityAlertIds = useMemo(() => new Set(priorityAlerts.map((alert) => String(alert.id))), [priorityAlerts])
 
   const advisoryTemplate = useMemo(() => findPreferredAdvisoryTemplate(templates), [templates])
+  const isLightTheme = typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'light'
+  const menuSurfaceBg = isLightTheme ? '#ffffff' : '#0f172a'
+  const menuBorder = isLightTheme ? '#cbd5e1' : '#334155'
+  const rowDefaultBg = isLightTheme ? '#f3f4f6' : '#1f2937'
+  const rowDefaultText = isLightTheme ? '#111827' : '#e5e7eb'
+
   // Build the sendable advisory list from both background-generated items and
   // the stored notifications feed, then collapse duplicates by external event.
   const advisories = useMemo(() => {
@@ -312,16 +323,14 @@ export default function SendAdvisoriesPage() {
   }, [buildFallbackPreviewHtml, buildPreviewEmailHtml, previewItem])
 
   const handleApprove = async (item: Notification) => {
+    const destination = String(recipientById[item.id] || '').trim()
+    const selectedGroupIds = selectedGroupIdsById[item.id] || []
     if (!selectedApproverUserId) {
       setFeedback('Select the superadmin approver before sending this advisory for approval.')
       return
     }
-    if (!corporateSsGroup) {
-      setFeedback(`${CORPORATE_SS_GROUP_NAME} recipient group is unavailable. Contact an administrator.`)
-      return
-    }
-    if (!corporateSsGroupReady) {
-      setFeedback(`${CORPORATE_SS_GROUP_NAME} has no active email recipients. Contact an administrator.`)
+    if (!corporateSsGroup || !corporateSsGroupReady) {
+      setFeedback('Corporate S&S must have active email recipients before requesting approval.')
       return
     }
     const messageText = buildWorkingText(item)
@@ -342,14 +351,14 @@ export default function SendAdvisoriesPage() {
         subject: item.email_subject || item.heading || `Advisory #${item.id}`,
         message_text: messageText,
         html_body: previewEmailHtml.trim() || undefined,
-        recipient_emails: [],
-        recipient_group_ids: [corporateSsGroup.id],
+        recipient_emails: destination ? [destination] : [],
+        recipient_group_ids: [...new Set([...selectedGroupIds, corporateSsGroup.id])],
       })
       setDismissedAdvisoryIds((prev) => (prev.includes(item.id) ? prev : [...prev, item.id]))
       void queryClient.invalidateQueries({ queryKey: ['send-advisories-notifications'] })
       void queryClient.invalidateQueries({ queryKey: ['notifications'] })
       void queryClient.invalidateQueries({ queryKey: ['approvals'] })
-      setFeedback(`Advisory sent for approval with delivery to ${CORPORATE_SS_GROUP_NAME}.`)
+      setFeedback('Advisory sent for approval. Corporate S&S is included automatically.')
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to send advisory for approval.'
       setFeedback(message)
@@ -422,16 +431,12 @@ export default function SendAdvisoriesPage() {
       {advisoryGenerationState.windowMinutes === sharedFeedTimeWindow && advisoryGenerationState.lastMessage
         ? <div className="compose-meta-note">{advisoryGenerationState.lastMessage}</div>
         : null}
-      <div className="compose-meta-note" aria-label="Advisory recipient group">
-        All advisories are sent to <strong>{CORPORATE_SS_GROUP_NAME}</strong> after approval.
+      <div className="compose-meta-note" aria-label="Mandatory advisory recipient group">
+        <strong>{CORPORATE_SS_GROUP_NAME}</strong> is always included in addition to your selected recipients.
       </div>
       {!corporateSsGroupReady ? (
         <div className="compose-email-feedback is-error" role="status">
-          {loadingRecipientGroup
-            ? 'Loading recipient group...'
-            : corporateSsGroup
-              ? 'Corporate S&S has no active email recipients. Contact an administrator.'
-              : 'Corporate S&S recipient group is unavailable. Contact an administrator.'}
+          {loadingRecipientGroup ? 'Loading Corporate S&S...' : 'Corporate S&S must have active email recipients before sending.'}
         </div>
       ) : null}
       {feedback ? <div className="compose-meta-note">{feedback}</div> : null}
@@ -441,7 +446,7 @@ export default function SendAdvisoriesPage() {
           <tr>
             <th align="left" className="send-advisories-col-time">Time</th>
             <th align="left" className="send-advisories-col-heading">Event heading</th>
-            <th align="left" className="send-advisories-col-email">Recipient Group</th>
+            <th align="left" className="send-advisories-col-email">Recipient Email</th>
             <th align="left" className="send-advisories-col-actions">Actions</th>
           </tr>
         </thead>
@@ -451,7 +456,85 @@ export default function SendAdvisoriesPage() {
               <td className="send-advisories-col-time">{formatAppDateTime(item.updated_at, '—')}</td>
               <td className="send-advisories-col-heading">{item.heading || `Advisory #${item.id}`}</td>
               <td className="send-advisories-col-email">
-                <strong>{CORPORATE_SS_GROUP_NAME}</strong>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', position: 'relative' }}>
+                  <input
+                    className="insights-email-input"
+                    type="text"
+                    id={`recipient-email-${item.id}`}
+                    name={`recipient_email_${item.id}`}
+                    autoComplete="new-password"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-bwignore="true"
+                    inputMode="email"
+                    spellCheck={false}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    readOnly={activeRecipientInputId !== item.id}
+                    value={recipientById[item.id] || ''}
+                    onFocus={() => setActiveRecipientInputId(item.id)}
+                    onBlur={() => {
+                      setActiveRecipientInputId((current) => (current === item.id ? null : current))
+                    }}
+                    onChange={(event) => {
+                      const next = event.target.value
+                      setRecipientById((prev) => ({ ...prev, [item.id]: next }))
+                      setSelectedGroupIdsById((prev) => ({ ...prev, [item.id]: [] }))
+                    }}
+                    placeholder="name@company.com"
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setGroupMenuForId((current) => (current === item.id ? null : item.id))}
+                    title="Send to email group"
+                    aria-label="Send to email group"
+                  >
+                    <Users size={14} />
+                  </button>
+                  {groupMenuForId === item.id ? (
+                    <div style={{ position: 'absolute', top: '108%', right: 0, minWidth: 230, background: menuSurfaceBg, border: `1px solid ${menuBorder}`, borderRadius: 8, zIndex: 20, maxHeight: 220, overflow: 'auto', boxShadow: '0 8px 20px rgba(15,23,42,0.25)' }}>
+                      {selectableEmailGroups.map((group) => (
+                        <button
+                          key={group.id}
+                          type="button"
+                          style={{
+                            display: 'block',
+                            width: '100%',
+                            textAlign: 'left',
+                            border: 0,
+                            borderRadius: 0,
+                            padding: '9px 10px',
+                            cursor: 'pointer',
+                            backgroundColor: (selectedGroupIdsById[item.id] || []).includes(group.id) ? '#b7ddc7' : rowDefaultBg,
+                            color: (selectedGroupIdsById[item.id] || []).includes(group.id) ? '#166534' : rowDefaultText,
+                            fontWeight: (selectedGroupIdsById[item.id] || []).includes(group.id) ? 700 : 500,
+                          }}
+                          onClick={() => {
+                            setSelectedGroupIdsById((prev) => {
+                              const current = prev[item.id] || []
+                              const next = current.includes(group.id)
+                                ? current.filter((id) => id !== group.id)
+                                : [...current, group.id]
+                              return { ...prev, [item.id]: next }
+                            })
+                            setRecipientById((prev) => ({ ...prev, [item.id]: '' }))
+                          }}
+                        >
+                          {group.name}
+                        </button>
+                      ))}
+                      {selectableEmailGroups.length === 0 ? (
+                        <div style={{ padding: 8, fontSize: 12, color: '#64748b' }}>No email groups found</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+                {(selectedGroupIdsById[item.id] || []).length > 0 ? (
+                  <div style={{ marginTop: 4, fontSize: 11, color: '#475569' }}>
+                    Groups: {emailGroups.filter((group) => (selectedGroupIdsById[item.id] || []).includes(group.id)).map((group) => group.name).join(', ')}
+                  </div>
+                ) : null}
               </td>
               <td className="send-advisories-actions-cell send-advisories-col-actions">
                 <div className="history-row-actions-inner send-advisories-actions">
