@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useOutletContext, useSearchParams } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
-import { notificationsApi } from '../api/notifications'
+import { ADVISORY_GENERATION_TIMEOUT_MS, notificationsApi, type NotificationRequestOptions } from '../api/notifications'
 import { useNotification } from '../hooks/useNotification'
 import { useParsedSettings, useSettings } from '../hooks/useSettings'
 import { useTemplates } from '../hooks/useTemplates'
@@ -19,6 +19,7 @@ import { parseGeographyJson } from '../constants/geography'
 import type { LlmRuntimeInfo } from '../types/notification'
 import type { ComposeTopBarControls } from '../components/layout/AppShell'
 import { buildAzureOpenAiPayload } from '../utils/azureOpenAi'
+import { getAdvisoryGenerationError, getAdvisoryGenerationValidationError } from '../utils/advisoryGeneration'
 
 export type GenerationPhase = 'idle' | 'preparing' | 'applying-template' | 'generating' | 'finalizing' | 'success' | 'error'
 
@@ -149,12 +150,15 @@ export default function ComposePage() {
   const [toastTone, setToastTone] = useState<ToastTone>('success')
   const [generating, setGenerating] = useState(false)
   const [generationPhase, setGenerationPhase] = useState<GenerationPhase>('idle')
+  const [generationRevision, setGenerationRevision] = useState(0)
   const [generateError, setGenerateError] = useState<string | null>(null)
   const [lastGeneratedTemplateName, setLastGeneratedTemplateName] = useState<string | null>(null)
   const [headerSaveStatus, setHeaderSaveStatus] = useState<'save' | 'saving' | 'saved'>('save')
 
   const manuallyEditedRef = useRef<Set<string>>(new Set())
   const autoGenerateTriggeredRef = useRef(false)
+  const generationInFlightRef = useRef(false)
+  const generationControllerRef = useRef<AbortController | null>(null)
   const advisorySectionRef = useRef<HTMLElement>(null)
   const guideDoneTimeoutRef = useRef<number | null>(null)
   const pendingAdvisoryScrollRef = useRef(false)
@@ -168,6 +172,8 @@ export default function ComposePage() {
   const { data: templates = [] } = useTemplates(true)
 
   const azureOpenAiPayload = buildAzureOpenAiPayload(rawSettings)
+
+  useEffect(() => () => generationControllerRef.current?.abort(), [])
 
   // Hydrate local editor state when opening an existing draft via query param.
   useEffect(() => {
@@ -256,6 +262,7 @@ export default function ComposePage() {
 
   // Source extraction flow: create draft (if needed), call extractor, then merge non-manual fields.
   const handleDoneSourceInput = async () => {
+    if (generationInFlightRef.current) return
     const text = sourceText
     if (!text) return
     setGenerateError(null)
@@ -323,6 +330,7 @@ export default function ComposePage() {
 
   // Reset source + generated outputs while preserving notification shell and template context.
   const handleClearSourceInput = () => {
+    if (generationInFlightRef.current) return
     const keysToReset = [
       'source_text',
       'heading',
@@ -356,7 +364,7 @@ export default function ComposePage() {
 
   // Create/save mutations are intentionally separate: create builds record, save enforces heading rule.
   const createMutation = useMutation({
-    mutationFn: notificationsApi.create,
+    mutationFn: (data: Parameters<typeof notificationsApi.create>[0]) => notificationsApi.create(data),
     onSuccess: (created) => {
       setNotificationId(created.id)
       queryClient.invalidateQueries({ queryKey: ['notifications'] })
@@ -388,7 +396,6 @@ export default function ComposePage() {
       return
     }
     void notificationsApi.update(notificationId, { tags_json: nextTagsJson }).then((updated) => {
-      syncNotification(updated as unknown as Record<string, unknown> & { id: number })
       queryClient.setQueryData(['notification', notificationId], (current: unknown) => {
         if (current && typeof current === 'object') {
           return {
@@ -439,17 +446,20 @@ export default function ComposePage() {
   }
 
   // Shared guard to ensure every action operates on a persisted notification row.
-  const ensureNotificationRecord = async (overrides: Record<string, unknown> = {}) => {
+  const ensureNotificationRecord = async (
+    overrides: Record<string, unknown> = {},
+    requestOptions: NotificationRequestOptions = {},
+  ) => {
     let id = notificationId
     const draftFields = Object.keys(overrides).length ? { ...fields, ...overrides } : fields
     if (!id) {
       const payload: Record<string, unknown> = pickAllowedFields(draftFields, CREATE_KEYS)
-      const created = await createMutation.mutateAsync(payload)
+      const created = await notificationsApi.create(payload, requestOptions)
       syncNotification(created as unknown as Record<string, unknown> & { id: number })
       return created.id
     }
     const updatePayload = pickAllowedFields(draftFields, UPDATE_KEYS)
-    const updated = await notificationsApi.update(id, updatePayload)
+    const updated = await notificationsApi.update(id, updatePayload, requestOptions)
     syncNotification(updated as unknown as Record<string, unknown> & { id: number })
     return id
   }
@@ -470,7 +480,7 @@ export default function ComposePage() {
   }
 
   const handleHeaderSave = async (overrides: Record<string, unknown> = {}) => {
-    if (headerSaveStatus === 'saving') return
+    if (headerSaveStatus === 'saving' || generationInFlightRef.current) return
     setHeaderSaveStatus('saving')
     try {
       const didSave = await handleSave(overrides)
@@ -494,17 +504,36 @@ export default function ComposePage() {
 
   // Generation flow with visible phase tracking for user feedback and fallback transparency.
   const handleGenerate = async () => {
+    if (generationInFlightRef.current) return
+    const inputError = getAdvisoryGenerationValidationError(fields)
+    if (inputError) {
+      setGenerateError(inputError)
+      setGenerationPhase('error')
+      return
+    }
+    generationInFlightRef.current = true
+    const controller = new AbortController()
+    generationControllerRef.current = controller
+    const deadline = window.setTimeout(() => controller.abort(), ADVISORY_GENERATION_TIMEOUT_MS)
+    const selectedTemplateId = Number(fields.template_id)
     setGenerateError(null)
     setGenerating(true)
     setGenerationPhase('preparing')
     try {
-      const id = await ensureNotificationRecord()
-      setGenerationPhase('applying-template')
+      const id = await ensureNotificationRecord({}, { signal: controller.signal })
+      // Finish any editor save already in flight before the server replaces its output.
+      await notificationsApi.waitForPendingUpdates(id)
+      if (controller.signal.aborted) throw new Error('Generation request timed out.')
       setGenerationPhase('generating')
       const generated = await notificationsApi.generate(
         id,
-        azureOpenAiPayload,
+        { ...azureOpenAiPayload, template_id: selectedTemplateId },
+        { signal: controller.signal },
       )
+      if (!toText(generated.generated_text)) {
+        throw new Error('Generation returned empty output. Your previous advisory has been kept. Check the source input, template, and LLM settings, then try again.')
+      }
+      setGenerationPhase('finalizing')
       syncNotification(generated as unknown as Record<string, unknown> & { id: number })
       const usedFallback = applyLlmRuntime({
         requested_provider: String((generated as unknown as Record<string, unknown>).llm_requested_provider || ''),
@@ -519,27 +548,19 @@ export default function ComposePage() {
           'warning',
         )
       }
-      setFields((prev) => ({
-        ...prev,
-        generated_text: (generated as unknown as Record<string, unknown>).generated_text,
-      }))
-      setGenerationPhase('finalizing')
       const appliedTemplateId = (generated as unknown as Record<string, unknown>).template_id as number | undefined
       const appliedTemplate = templates.find((template) => template.id === appliedTemplateId)
       setLastGeneratedTemplateName(appliedTemplate?.name ?? null)
-      const nextText = toText((generated as unknown as Record<string, unknown>).generated_text)
-      if (!nextText) {
-        setGenerationPhase('error')
-        setGenerateError('Generation completed but returned empty output. Check source input, template, and LLM settings.')
-      } else {
-        pendingAdvisoryScrollRef.current = true
-        setGenerationPhase('success')
-      }
+      setGenerationRevision((current) => current + 1)
+      pendingAdvisoryScrollRef.current = true
+      setGenerationPhase('success')
     } catch (error) {
       setGenerationPhase('error')
-      const message = error instanceof Error ? error.message : 'Failed to generate output.'
-      setGenerateError(message)
+      setGenerateError(getAdvisoryGenerationError(error, controller.signal.aborted))
     } finally {
+      window.clearTimeout(deadline)
+      if (generationControllerRef.current === controller) generationControllerRef.current = null
+      generationInFlightRef.current = false
       setGenerating(false)
       setTimeout(() => {
         setGenerationPhase((current) => (current === 'success' ? 'idle' : current))
@@ -551,6 +572,7 @@ export default function ComposePage() {
   useEffect(() => {
     if (!shouldAutoGenerate || autoGenerateTriggeredRef.current) return
     if (!notificationId) return
+    if (hydratedNotificationIdRef.current !== notificationId || !toText(fields.source_text)) return
 
     autoGenerateTriggeredRef.current = true
     showToast('Generating summary...')
@@ -559,7 +581,7 @@ export default function ComposePage() {
     const next = new URLSearchParams(params)
     next.delete('autogen')
     setParams(next, { replace: true })
-  }, [shouldAutoGenerate, notificationId, params, setParams])
+  }, [shouldAutoGenerate, notificationId, fields, params, setParams])
 
   // Lightweight success/warning toast utility shared across compose actions.
   const showToast = (message: string, tone: ToastTone = 'success') => {
@@ -736,6 +758,7 @@ export default function ComposePage() {
         <div id="compose-guide-source" className={guideClassFor('source-input')}>
           <ComposeLeftPanel
             fields={fields}
+            disabled={generating}
             onChange={handleChange}
           onFieldChange={handleFieldChange}
           autoExtractedFields={autoExtractedFields}
@@ -772,6 +795,7 @@ export default function ComposePage() {
               onGenerate={handleGenerate}
               generating={generating}
               generationPhase={generationPhase}
+              generationRevision={generationRevision}
               generateError={generateError}
               lastGeneratedTemplateName={lastGeneratedTemplateName}
               onShowToast={showToast}
@@ -794,6 +818,7 @@ export default function ComposePage() {
           onGenerate={handleGenerate}
           generating={generating}
           generationPhase={generationPhase}
+          generationRevision={generationRevision}
           generateError={generateError}
           lastGeneratedTemplateName={lastGeneratedTemplateName}
           onShowToast={showToast}

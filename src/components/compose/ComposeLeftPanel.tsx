@@ -19,6 +19,7 @@ type ComposeAnalysisSettings = {
 
 interface ComposeLeftPanelProps {
   fields: Record<string, unknown>
+  disabled?: boolean
   onChange: (key: string, value: unknown) => void
   onFieldChange: (key: string, value: unknown) => void
   autoExtractedFields: Set<string>
@@ -36,6 +37,7 @@ interface ComposeAnalysisPanelProps {
 
 export function ComposeLeftPanel({
   fields,
+  disabled = false,
   onChange,
   onFieldChange,
   autoExtractedFields,
@@ -90,6 +92,7 @@ export function ComposeLeftPanel({
           Notification Heading
           <textarea
             autoFocus
+            disabled={disabled}
             value={heading}
             onChange={(e) => onFieldChange('heading', e.target.value)}
             className={`compose-heading-input${autoExtractedFields.has('heading') ? ' auto-extracted' : ''}`}
@@ -100,6 +103,7 @@ export function ComposeLeftPanel({
         {validationError ? <div className="compose-inline-error">{validationError}</div> : null}
 
         <textarea
+          disabled={disabled}
           value={sourceText}
           onChange={(e) => onChange('source_text', e.target.value)}
           className="compose-source-textarea"
@@ -113,11 +117,11 @@ export function ComposeLeftPanel({
               type="button"
               className="btn-ghost"
               onClick={handleRequestClear}
-              disabled={!hasClearableContent && autoExtractedFields.size === 0}
+              disabled={disabled || (!hasClearableContent && autoExtractedFields.size === 0)}
             >
               Clear
             </button>
-            <button type="button" className="btn-primary" onClick={onDoneSourceInput}>
+            <button type="button" className="btn-primary" onClick={onDoneSourceInput} disabled={disabled}>
               Done
             </button>
           </div>

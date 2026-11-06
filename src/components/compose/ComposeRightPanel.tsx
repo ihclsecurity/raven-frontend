@@ -35,6 +35,7 @@ interface ComposeRightPanelProps {
   onGenerate: () => Promise<void>
   generating?: boolean
   generationPhase?: GenerationPhase
+  generationRevision?: number
   generateError?: string | null
   lastGeneratedTemplateName?: string | null
   onShowToast: (message: string) => void
@@ -172,6 +173,7 @@ export function ComposeRightPanel({
   onGenerate,
   generating,
   generationPhase = 'idle',
+  generationRevision = 0,
   generateError,
   lastGeneratedTemplateName,
   onShowToast,
@@ -201,6 +203,11 @@ export function ComposeRightPanel({
   const draftOutputTextRef = useRef('')
   const lastPersistedOutputTextRef = useRef('')
   const hydratedNotificationIdRef = useRef<number | null | undefined>(undefined)
+  const hydratedGenerationRevisionRef = useRef(generationRevision)
+  const generationRevisionRef = useRef(generationRevision)
+  const generatingRef = useRef(Boolean(generating))
+  generationRevisionRef.current = generationRevision
+  generatingRef.current = Boolean(generating)
   const { data: mapProperties = [] } = useQuery({
     queryKey: ['map-view-properties'],
     queryFn: () => datasurfrApi.listMapProperties(),
@@ -227,7 +234,7 @@ export function ComposeRightPanel({
     error: 'Failed',
   }
 
-  const phaseOrder: GenerationPhase[] = ['preparing', 'applying-template', 'generating', 'finalizing']
+  const phaseOrder: GenerationPhase[] = ['preparing', 'generating', 'finalizing']
   const activeIndex = phaseOrder.indexOf(generationPhase)
 
   const activeOutputKey = (fields.final_text as string) ? 'final_text' : ((fields.edited_text as string) ? 'edited_text' : 'generated_text')
@@ -257,14 +264,16 @@ export function ComposeRightPanel({
 
   useEffect(() => {
     const notificationChanged = hydratedNotificationIdRef.current !== notificationId
-    if (notificationChanged || !textEditorHasUserChanges) {
+    const generationChanged = hydratedGenerationRevisionRef.current !== generationRevision
+    if (notificationChanged || generationChanged || !textEditorHasUserChanges) {
       hydratedNotificationIdRef.current = notificationId
+      hydratedGenerationRevisionRef.current = generationRevision
       setDraftOutputText(outputText)
       draftOutputTextRef.current = outputText
       lastPersistedOutputTextRef.current = outputText
       setTextEditorHasUserChanges(false)
     }
-  }, [notificationId, outputText, textEditorHasUserChanges])
+  }, [generationRevision, notificationId, outputText, textEditorHasUserChanges])
 
   const modeButtonClass = (mode: OutputMode) => `compose-pill${outputMode === mode ? ' is-active' : ''}`
   const editorDirty = textEditorHasUserChanges
@@ -287,6 +296,7 @@ export function ComposeRightPanel({
   const rowDefaultText = isLightTheme ? '#111827' : '#e5e7eb'
 
   const updateEditorText = (nextText: string) => {
+    if (generatingRef.current) return
     setDraftOutputText(nextText)
     draftOutputTextRef.current = nextText
     setTextEditorHasUserChanges(nextText !== lastPersistedOutputTextRef.current)
@@ -440,15 +450,18 @@ export function ComposeRightPanel({
   }, [emailPreviewShellHtml, geographyJson, notificationId, outputText, tagsJson])
 
   const persistTextEditorChanges = async (textOverride?: string): Promise<boolean> => {
+    if (generatingRef.current) return false
     if (!notificationId && !onRefreshPreview) {
       return false
     }
     const textToSave = textOverride ?? draftOutputTextRef.current ?? editorText
     const overrides = { [textSaveKey]: textToSave }
+    const savedRevision = generationRevisionRef.current
     try {
       setSavingOutputChanges(true)
       if (notificationId) {
         const updated = await notificationsApi.update(notificationId, overrides)
+        if (generatingRef.current || generationRevisionRef.current !== savedRevision) return false
         onChange(textSaveKey, (updated as unknown as Record<string, unknown>)[textSaveKey] ?? textToSave)
         queryClient.setQueryData(['notification', notificationId], updated)
       } else if (onRefreshPreview) {
@@ -476,12 +489,12 @@ export function ComposeRightPanel({
   }
 
   useEffect(() => {
-    if (!textEditorHasUserChanges || (!notificationId && !onRefreshPreview)) return
+    if (generating || !textEditorHasUserChanges || (!notificationId && !onRefreshPreview)) return
     const timeout = window.setTimeout(() => {
       void persistTextEditorChanges()
     }, 350)
     return () => window.clearTimeout(timeout)
-  }, [draftOutputText, notificationId, onRefreshPreview, textEditorHasUserChanges, textSaveKey])
+  }, [draftOutputText, generating, notificationId, onRefreshPreview, textEditorHasUserChanges, textSaveKey])
 
   if (!showTemplatePanel && !shouldRenderAdvisoryPanel) {
     return null
@@ -739,6 +752,7 @@ export function ComposeRightPanel({
               Template
               <select
                 value={fields.template_id ? String(fields.template_id) : ''}
+                disabled={Boolean(generating)}
                 onChange={(e) => onTemplateChange(e.target.value ? Number(e.target.value) : null)}
               >
                 <option value="">Select template</option>
@@ -759,7 +773,7 @@ export function ComposeRightPanel({
           ) : null}
 
           {shouldShowGenerationDetails ? (
-            <div className={`processing-panel ${generating ? 'is-active' : ''}`}>
+            <div className={`processing-panel ${generating ? 'is-active' : ''}`} role="status" aria-live="polite">
               <div className="processing-row">
                 <span className="spinner-dot" />
                 <span>{phaseLabelMap[generationPhase]}</span>
@@ -768,7 +782,7 @@ export function ComposeRightPanel({
                 {phaseOrder.map((phase, index) => {
                   const isDone = generationPhase === 'success' || (activeIndex >= 0 && index < activeIndex)
                   const isActive = generationPhase === phase
-                  const stepLabel = phase === 'applying-template' ? 'Template applied' : phaseLabelMap[phase]
+                  const stepLabel = phaseLabelMap[phase]
                   return (
                     <div key={phase} className={`compose-phase-item${isDone ? ' is-done' : ''}${isActive ? ' is-active' : ''}`}>
                       <span className="compose-phase-dot" aria-hidden="true">
@@ -782,7 +796,7 @@ export function ComposeRightPanel({
             </div>
           ) : null}
 
-          {generateError ? <div className="compose-alert-error">{generateError}</div> : null}
+          {generateError ? <div className="compose-alert-error" role="alert">{generateError}</div> : null}
 
           {fallbackUsed ? (
             <div className="runtime-fallback-notice">
@@ -871,7 +885,13 @@ export function ComposeRightPanel({
               <div className="compose-meta-note" style={{ marginBottom: 10 }}>
                 Edit the advisory in a clean document editor. The email template below remains read-only and updates from this text.
               </div>
-              <AdvisoryRichTextEditor
+              {generating ? (
+                <div className="compose-rich-editor-shell" aria-busy="true">
+                  <div className="compose-meta-note">Generating a new advisory. Editing will resume when generation finishes.</div>
+                  <pre className="compose-rich-editor-prose" style={{ whiteSpace: 'pre-wrap' }}>{editorText}</pre>
+                </div>
+              ) : <AdvisoryRichTextEditor
+                key={`${notificationId ?? 'new'}:${generationRevision}`}
                 value={editorText}
                 onChange={updateEditorText}
                 saving={savingOutputChanges}
@@ -884,7 +904,7 @@ export function ComposeRightPanel({
                     void persistTextEditorChanges()
                   }
                 }}
-              />
+              />}
             </div>
           )}
 
